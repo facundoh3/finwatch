@@ -1,0 +1,182 @@
+project:
+  name: finwatch
+  version: "0.1.0"
+  description: >
+    App financiera personal para análisis de mercado, noticias con impacto explicado
+    y recomendaciones de timing de inversión. Arquitectura multiagente con modelos
+    gratuitos (Qwen3.6) para procesamiento y Claude para análisis final.
+  author: facundoh3
+  language: python
+  framework: streamlit
+  purpose: personal_use
+
+# ─── ARQUITECTURA MULTIAGENTE ───────────────────────────────────────────────
+agents:
+  context_agent:
+    model: qwen/qwen3.6-plus-preview:free   # via OpenRouter, gratis
+    role: >
+      Recolecta noticias financieras y datos de mercado. Filtra,
+      resume y prepara el payload compacto para el agente de análisis.
+    inputs:
+      - tickers: list[str]
+      - hours_back: int
+    outputs:
+      - filtered_news: list[NewsItem]
+      - market_snapshot: MarketSnapshot
+    token_budget: 8000
+
+  analysis_agent:
+    model: anthropic/claude-sonnet-4-6   # solo recibe contexto ya procesado
+    role: >
+      Recibe el contexto compacto del context_agent. Analiza el impacto
+      de noticias en cada ticker, evalúa timing de entrada y genera
+      recomendaciones en lenguaje simple con fuentes.
+    inputs:
+      - context: AgentContext
+    outputs:
+      - recommendations: list[Recommendation]
+      - market_summary: str
+    token_budget: 4000  # bajo porque recibe contexto ya filtrado
+
+# ─── FUENTES DE DATOS ────────────────────────────────────────────────────────
+data_sources:
+  market_data:
+    provider: finnhub
+    free_tier: true
+    endpoints:
+      - quote           # precio actual
+      - candles         # OHLCV histórico
+      - company_news    # noticias por ticker
+      - market_news     # noticias generales
+    rate_limit: "60 req/min"
+
+  news_sentiment:
+    provider: marketaux
+    free_tier: true
+    endpoints:
+      - news_with_sentiment
+    rate_limit: "100 req/day"
+
+  charts:
+    provider: tradingview_widgets
+    type: embedded_iframe
+    cost: free
+    note: "No API key requerida, solo widget embed JS"
+
+  fallback_market:
+    provider: alpha_vantage
+    free_tier: true
+    rate_limit: "25 req/day"
+    use_when: finnhub_unavailable
+
+# ─── MODELOS DE DATOS ────────────────────────────────────────────────────────
+models:
+  NewsItem:
+    fields:
+      - headline: str
+      - summary: str
+      - source: str
+      - url: str
+      - published_at: datetime
+      - sentiment_score: float        # -1.0 a 1.0
+      - sentiment_label: str          # POSITIVE | NEGATIVE | NEUTRAL
+      - related_tickers: list[str]
+      - impact_explanation: str | None  # generado por Claude
+
+  MarketSnapshot:
+    fields:
+      - ticker: str
+      - current_price: float
+      - change_pct: float
+      - volume: int
+      - high_52w: float
+      - low_52w: float
+      - timestamp: datetime
+
+  Recommendation:
+    fields:
+      - ticker: str
+      - action: str                   # BUY | WAIT | AVOID
+      - wait_days: int | None         # si action == WAIT
+      - confidence: str               # HIGH | MEDIUM | LOW
+      - reasoning: str                # explicación en español simple
+      - sources: list[str]
+      - generated_at: datetime
+
+  AgentContext:
+    fields:
+      - news: list[NewsItem]
+      - snapshots: list[MarketSnapshot]
+      - query_tickers: list[str]
+      - timestamp: datetime
+
+# ─── FEATURES POR FASE ───────────────────────────────────────────────────────
+phases:
+  phase_1:
+    name: "Core data layer"
+    weeks: "2-3"
+    deliverables:
+      - Clientes HTTP para Finnhub y Marketaux (con retry y cache local)
+      - Modelos Pydantic validados
+      - Tests unitarios para cada modelo
+      - Cache en disco (JSON) para evitar rate limits en dev
+
+  phase_2:
+    name: "Pipeline multiagente"
+    weeks: "3-4"
+    deliverables:
+      - context_agent: fetch + filtrado + resumen
+      - analysis_agent: análisis + recomendaciones via Claude
+      - Orquestador que conecta ambos agentes
+      - Prompt templates versionados en /config
+
+  phase_3:
+    name: "Frontend Streamlit"
+    weeks: "1-2"
+    deliverables:
+      - Dashboard principal con market overview
+      - Página de noticias con impacto explicado
+      - Página de recomendaciones con fuentes
+      - Widget TradingView embebido por ticker
+
+  phase_4:
+    name: "Deploy local"
+    weeks: "1"
+    deliverables:
+      - docker-compose.yml
+      - .env.example documentado
+      - README con instrucciones de setup
+      - Script de inicialización
+
+# ─── CONFIGURACIÓN ───────────────────────────────────────────────────────────
+config:
+  tickers_default:
+    - AAPL
+    - NVDA
+    - TSLA
+    - MSFT
+    - SPY    # ETF S&P500 como referencia macro
+  cache_ttl_minutes: 30
+  news_hours_back: 24
+  language_output: es   # Claude responde en español
+  log_level: INFO
+
+# ─── TOKEN OPTIMIZATION ──────────────────────────────────────────────────────
+token_strategy:
+  principle: >
+    Qwen3.6 (gratis) hace el trabajo de volumen. Claude solo recibe
+    el resumen final compacto. Objetivo: Claude consume < 4000 tokens
+    por análisis completo.
+  techniques:
+    - cache_news: "no re-fetches si TTL no expiró"
+    - compress_before_claude: "context_agent resume noticias a bullet points"
+    - batch_tickers: "analiza todos los tickers en un solo call a Claude"
+    - structured_output: "Claude responde solo JSON, sin prose innecesaria"
+
+# ─── RESTRICCIONES ───────────────────────────────────────────────────────────
+constraints:
+  - No es una app de trading real, solo informativa
+  - Sin base de datos — cache en disco JSON es suficiente para uso personal
+  - Sin autenticación — app local, no pública
+  - Sin costos fijos — APIs free tier + Claude API pay-per-use
+  - Python 3.11+
