@@ -1,0 +1,23 @@
+tickers_usa:
+  - AAPL
+  - NVDA
+  - TSLA
+  - MSFT
+  - SPY       # ETF S&P500 — referencia macro
+
+tickers_arg_adr:
+  - YPF       # YPF S.A. ADR en NYSE
+  - GGAL      # Grupo Financiero Galicia ADR en NYSE
+  - BMA       # Banco Macro ADR en NYSE
+  - BBAR      # BBVA Argentina ADR en NYSE
+
+tickers_byma:
+  - YPFD      # YPF panel BYMA
+  - GGAL      # Galicia panel BYMA
+  - TXAR      # Ternium Argentina BYMA
+  - BBAR      # BBVA Argentina BYMA
+  - PAMP      # Pampa Energía BYMA
+
+indices:
+  - "^MERV"   # S&P Merval (Argentina)
+  - "^GSPC"   # S&P 500 (USA)

@@ -1,0 +1,20 @@
+version: "3.9"
+
+services:
+  finwatch:
+    image: python:3.11-slim
+    working_dir: /app
+    volumes:
+      - .:/app
+      - ./data/cache:/app/data/cache
+    ports:
+      - "8501:8501"
+    env_file:
+      - .env
+    command: >
+      sh -c "pip install -r requirements.txt -q &&
+             streamlit run frontend/app.py
+             --server.port=8501
+             --server.address=0.0.0.0
+             --server.headless=true"
+    restart: unless-stopped

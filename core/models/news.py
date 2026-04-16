@@ -1,7 +1,8 @@
 from datetime import datetime
 from enum import Enum
+from typing import Literal
 
-from pydantic import BaseModel, Field, HttpUrl, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class SentimentLabel(str, Enum):
@@ -33,6 +34,15 @@ class NewsItem(BaseModel):
         default=None,
         description="Explicación en español generada por Claude sobre el impacto en el mercado",
     )
+    source_tier: Literal["A", "B", "C"] = Field(
+        default="B",
+        description="A=Reuters/Bloomberg/WSJ, B=Finnhub/otros agregadores, C=desconocida",
+    )
+    corroborated_by: int = Field(
+        default=1,
+        ge=1,
+        description="Cantidad de fuentes independientes que reportan la misma noticia",
+    )
 
     @field_validator("related_tickers", mode="before")
     @classmethod
@@ -40,21 +50,18 @@ class NewsItem(BaseModel):
         """Asegura que todos los tickers estén en mayúsculas."""
         return [ticker.upper().strip() for ticker in v if ticker.strip()]
 
-    @field_validator("sentiment_label", mode="before")
-    @classmethod
-    def derive_label_from_score(cls, v: str, info) -> SentimentLabel:
+    @model_validator(mode="after")
+    def derive_label_from_score(self) -> "NewsItem":
         """
-        Si viene un label explícito lo usa. Si no, lo deriva del score.
-        Útil cuando Finnhub da el score pero no el label.
+        Deriva el sentiment_label del score si no fue explícitamente sobrescrito.
+        En Pydantic v2, @field_validator no corre sobre defaults — se usa model_validator.
         """
-        if v and v != SentimentLabel.NEUTRAL:
-            return SentimentLabel(v)
-        score = info.data.get("sentiment_score", 0.0)
-        if score >= 0.1:
-            return SentimentLabel.POSITIVE
-        if score <= -0.1:
-            return SentimentLabel.NEGATIVE
-        return SentimentLabel.NEUTRAL
+        if self.sentiment_label == SentimentLabel.NEUTRAL:
+            if self.sentiment_score >= 0.1:
+                object.__setattr__(self, "sentiment_label", SentimentLabel.POSITIVE)
+            elif self.sentiment_score <= -0.1:
+                object.__setattr__(self, "sentiment_label", SentimentLabel.NEGATIVE)
+        return self
 
     def to_context_bullet(self) -> str:
         """
@@ -64,9 +71,13 @@ class NewsItem(BaseModel):
         Ejemplo de output:
         [NEGATIVE] TSLA: Tesla recalls 50k vehicles over brake issue (reuters.com)
         """
+        from urllib.parse import urlparse
         tickers_str = ", ".join(self.related_tickers) if self.related_tickers else "general"
-        source_short = self.source.replace("www.", "").split("/")[0]
-        return f"[{self.sentiment_label}] {tickers_str}: {self.headline} ({source_short})"
+        try:
+            domain = urlparse(self.url).netloc.replace("www.", "") or self.source
+        except Exception:
+            domain = self.source
+        return f"[{self.sentiment_label.value}] {tickers_str}: {self.headline} ({domain})"
 
 
 class NewsCollection(BaseModel):
