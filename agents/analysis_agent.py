@@ -1,66 +1,92 @@
 """
-Analysis Agent — usa Claude Sonnet para generar recomendaciones de inversión.
-Solo recibe el contexto comprimido del context_agent (<= 4000 tokens).
+Analysis Agent — pipeline de análisis multimodelo.
+
+Orden de preferencia:
+  1. Claude Sonnet (si ANTHROPIC_API_KEY tiene créditos)
+  2. Qwen3.6 via OpenRouter (gratis, 1M contexto) ← default sin Anthropic
+  3. Error claro si ninguno está disponible
 """
-import json
 from pathlib import Path
 
-import anthropic
 from loguru import logger
 
+from agents.utils import build_openrouter_client, extract_json
 from config.settings import Settings
 from core.models.recommendation import AgentContext, Recommendation, RecommendationSet
 
 PROMPT_PATH = Path(__file__).parent.parent / "config" / "prompts" / "analysis_agent.txt"
-CLAUDE_MODEL = "claude-sonnet-4-6"
+
+# Modelos disponibles via OpenRouter (todos gratis)
+QWEN_MODEL = "qwen/qwen3.6-plus-preview:free"
+LLAMA_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
 
 
 async def run(context: AgentContext, settings: Settings) -> RecommendationSet:
     """
-    Genera recomendaciones de inversión usando Claude Sonnet.
-    Recibe el AgentContext comprimido del context_agent.
+    Genera recomendaciones. Intenta Claude primero, cae en Qwen si no hay créditos.
     """
-    if not settings.anthropic_api_key:
-        logger.error("ANTHROPIC_API_KEY no configurada")
-        return RecommendationSet(
-            market_summary="Error: ANTHROPIC_API_KEY no configurada. Configurá .env para obtener análisis."
-        )
+    prompt = _build_prompt(context)
 
-    prompt_template = PROMPT_PATH.read_text()
-    context_block = context.to_claude_prompt_block()
-    prompt = prompt_template.format(context_block=context_block)
+    # Intentar con Claude si está configurado
+    if settings.anthropic_api_key:
+        result = await _run_claude(prompt, settings)
+        if result is not None:
+            return result
+        logger.warning("Claude falló — usando Qwen como fallback")
 
-    logger.info(f"Enviando a Claude: ~{len(prompt.split())} palabras")
+    # Qwen via OpenRouter (gratis)
+    if settings.openrouter_api_key:
+        result = await _run_openrouter(prompt, settings, QWEN_MODEL)
+        if result is not None:
+            return result
 
+    return RecommendationSet(
+        market_summary="No hay modelos disponibles. Configurá ANTHROPIC_API_KEY o OPENROUTER_API_KEY en .env"
+    )
+
+
+def _build_prompt(context: AgentContext) -> str:
+    template = PROMPT_PATH.read_text()
+    return template.format(context_block=context.to_claude_prompt_block())
+
+
+async def _run_claude(prompt: str, settings: Settings) -> RecommendationSet | None:
     try:
+        import anthropic
         client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
         message = await client.messages.create(
-            model=CLAUDE_MODEL,
+            model="claude-sonnet-4-6",
             max_tokens=1500,
             messages=[{"role": "user", "content": prompt}],
         )
         response_text = message.content[0].text
-        logger.info(f"Claude respondió: {message.usage.output_tokens} tokens")
-
-        return _parse_response(response_text)
-
-    except anthropic.APIError as e:
-        logger.error(f"Error API Claude: {e}")
-        return RecommendationSet(
-            market_summary=f"Error al conectar con Claude: {str(e)}"
-        )
+        logger.info(f"Claude: {message.usage.output_tokens} tokens output")
+        return _parse(response_text)
+    except Exception as e:
+        logger.warning(f"Claude error: {e}")
+        return None
 
 
-def _parse_response(response_text: str) -> RecommendationSet:
-    """Parsea la respuesta JSON de Claude a RecommendationSet."""
+async def _run_openrouter(prompt: str, settings: Settings, model: str) -> RecommendationSet | None:
     try:
-        # Claude puede incluir texto antes del JSON si falla el formato
-        start = response_text.find("{")
-        end = response_text.rfind("}") + 1
-        if start == -1 or end == 0:
-            raise ValueError("No se encontró JSON en la respuesta")
+        client = build_openrouter_client(settings.openrouter_api_key)
+        response = await client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=2000,
+            temperature=0.3,
+        )
+        response_text = response.choices[0].message.content
+        logger.info(f"{model}: respuesta recibida")
+        return _parse(response_text)
+    except Exception as e:
+        logger.warning(f"{model} error: {e}")
+        return None
 
-        data = json.loads(response_text[start:end])
+
+def _parse(text: str) -> RecommendationSet | None:
+    try:
+        data = extract_json(text)
         recommendations = []
         for r in data.get("recommendations", []):
             try:
@@ -68,19 +94,16 @@ def _parse_response(response_text: str) -> RecommendationSet:
                     ticker=r["ticker"],
                     action=r["action"],
                     wait_days=r.get("wait_days"),
-                    confidence=r["confidence"],
-                    reasoning=r["reasoning"],
+                    confidence=r.get("confidence", "LOW"),
+                    reasoning=r.get("reasoning", "Sin detalle"),
                     sources=r.get("sources", []),
                 ))
             except Exception as e:
-                logger.warning(f"Recomendación inválida descartada ({r.get('ticker')}): {e}")
-
+                logger.debug(f"Recomendación descartada ({r.get('ticker')}): {e}")
         return RecommendationSet(
             recommendations=recommendations,
             market_summary=data.get("market_summary", ""),
         )
     except Exception as e:
-        logger.error(f"Error parseando respuesta de Claude: {e}\nRespuesta: {response_text[:500]}")
-        return RecommendationSet(
-            market_summary="Error al interpretar la respuesta del análisis. Intentá de nuevo."
-        )
+        logger.error(f"Error parseando respuesta del análisis: {e}")
+        return None

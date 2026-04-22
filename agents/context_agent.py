@@ -7,11 +7,11 @@ Estrategia de tokens:
 - Solo pasa < 4000 tokens comprimidos al analysis_agent
 """
 import asyncio
-import json
 from pathlib import Path
 
 from loguru import logger
-from openai import AsyncOpenAI
+
+from agents.utils import build_openrouter_client, extract_json
 
 from config.settings import Settings
 from core.models.market import MarketOverview, MarketSnapshot
@@ -171,17 +171,13 @@ async def _filter_with_qwen(
             market_data=market_text,
         )
 
-        client = AsyncOpenAI(
-            base_url="https://openrouter.ai/api/v1",
-            api_key=settings.openrouter_api_key,
-        )
+        client = build_openrouter_client(settings.openrouter_api_key)
         response = await client.chat.completions.create(
             model=QWEN_MODEL,
             messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"},
             max_tokens=2000,
         )
-        result = json.loads(response.choices[0].message.content)
+        result = extract_json(response.choices[0].message.content)
         filtered = result.get("filtered_news", [])
         logger.info(f"Qwen filtró: {len(filtered)}/{len(news_items)} noticias")
 
