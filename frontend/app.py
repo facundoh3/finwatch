@@ -73,7 +73,7 @@ def _sidebar(cfg: dict) -> tuple[list[str], list[str], bool]:
     force_refresh = st.sidebar.button("🔄 Analizar ahora", use_container_width=True)
     st.sidebar.divider()
     st.sidebar.caption("Cache: 30 min · Noticias: 24hs")
-    st.sidebar.caption("Qwen3.6 (contexto) · Gemini Flash + Llama 3.3 (análisis)")
+    st.sidebar.caption("IA: modelos gratuitos vía OpenRouter")
 
     tickers_usa = tickers_etf + tickers_acciones
     return tickers_usa, tickers_byma, force_refresh
@@ -83,12 +83,12 @@ def _check_settings():
     from config.settings import get_settings
     s = get_settings()
     issues = []
-    if not s.anthropic_api_key:
-        issues.append("❌ **ANTHROPIC_API_KEY** no configurada — sin análisis Claude")
     if not s.openrouter_api_key:
-        issues.append("⚠️ **OPENROUTER_API_KEY** no configurada — sin filtrado Qwen")
+        issues.append("❌ **OPENROUTER_API_KEY** no configurada — requerida para el análisis de IA")
     if not s.finnhub_api_key:
-        issues.append("⚠️ **FINNHUB_API_KEY** no configurada — datos limitados")
+        issues.append("⚠️ **FINNHUB_API_KEY** no configurada — datos de mercado limitados")
+    if not s.marketaux_api_key:
+        issues.append("⚠️ **MARKETAUX_API_KEY** no configurada — menos fuentes de noticias")
     return issues
 
 

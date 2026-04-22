@@ -1,11 +1,9 @@
 """
 Analysis Agent — pipeline de análisis multimodelo.
 
-Orden de ejecución:
-  1. Gemini Flash 2.0 via OpenRouter (gratis, análisis principal)
-  2. Llama 3.3 70B via OpenRouter (gratis, verificación/consenso)
-  3. Claude Sonnet (si ANTHROPIC_API_KEY disponible, desempate)
-  Fusiona resultados por consenso de acción.
+Prueba modelos gratuitos de OpenRouter en orden hasta obtener resultados.
+Si se obtienen 2 resultados, se fusionan por consenso.
+Claude es último recurso (requiere créditos).
 """
 from pathlib import Path
 
@@ -13,43 +11,50 @@ from loguru import logger
 
 from agents.utils import build_openrouter_client, extract_json
 from config.settings import Settings
-from core.models.recommendation import AgentContext, Recommendation, RecommendationSet, Action
+from core.models.recommendation import Action, AgentContext, Recommendation, RecommendationSet
 
 PROMPT_PATH = Path(__file__).parent.parent / "config" / "prompts" / "analysis_agent.txt"
-
-GEMINI_MODEL = "google/gemini-2.0-flash-exp:free"
-LLAMA_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
 CLAUDE_MODEL = "claude-sonnet-4-6"
+
+# Modelos gratuitos de OpenRouter, en orden de preferencia
+FREE_ANALYSIS_MODELS = [
+    "meta-llama/llama-3.3-70b-instruct:free",
+    "qwen/qwen3-235b-a22b:free",
+    "qwen/qwen3.6-plus-preview:free",
+    "microsoft/phi-4:free",
+    "mistralai/mistral-7b-instruct:free",
+]
 
 
 async def run(context: AgentContext, settings: Settings) -> RecommendationSet:
     """
-    Pipeline multimodelo: Gemini Flash → Llama 3.3 70B → fusión por consenso.
-    Claude actúa como desempate si ANTHROPIC_API_KEY está disponible.
+    Prueba modelos gratuitos en orden. Para después de conseguir 2 resultados
+    válidos (para consenso) o devuelve el primero que funcione.
+    Claude sólo si todos los gratuitos fallan y hay créditos disponibles.
     """
     prompt = _build_prompt(context)
     results: list[RecommendationSet] = []
 
     if settings.openrouter_api_key:
-        gemini_result = await _run_openrouter(prompt, settings, GEMINI_MODEL)
-        if gemini_result:
-            logger.info(f"Gemini Flash: {len(gemini_result.recommendations)} recomendaciones")
-            results.append(gemini_result)
+        for model in FREE_ANALYSIS_MODELS:
+            if len(results) >= 2:
+                break
+            result = await _run_openrouter(prompt, settings, model)
+            if result and result.recommendations:
+                logger.info(f"Modelo exitoso: {model} ({len(result.recommendations)} recomendaciones)")
+                results.append(result)
 
-        llama_result = await _run_openrouter(prompt, settings, LLAMA_MODEL)
-        if llama_result:
-            logger.info(f"Llama 3.3 70B: {len(llama_result.recommendations)} recomendaciones")
-            results.append(llama_result)
-
-    if settings.anthropic_api_key and len(results) < 2:
-        claude_result = await _run_claude(prompt, settings)
-        if claude_result:
-            logger.info("Claude Sonnet: recomendaciones recibidas")
-            results.append(claude_result)
+    if not results and settings.anthropic_api_key:
+        result = await _run_claude(prompt, settings)
+        if result and result.recommendations:
+            results.append(result)
 
     if not results:
         return RecommendationSet(
-            market_summary="No hay modelos disponibles. Configurá OPENROUTER_API_KEY en .env"
+            market_summary=(
+                "Los modelos gratuitos están temporalmente no disponibles (rate limit). "
+                "Esperá unos minutos y volvé a analizar."
+            )
         )
 
     if len(results) == 1:
@@ -64,16 +69,7 @@ def _build_prompt(context: AgentContext) -> str:
 
 
 def _merge_by_consensus(results: list[RecommendationSet]) -> RecommendationSet:
-    """
-    Fusiona recomendaciones de múltiples modelos por consenso de acción.
-    Si coinciden → mantiene la del primer modelo con ese ticker.
-    Si discrepan → usa WAIT como posición conservadora.
-    """
-    ticker_votes: dict[str, list[RecommendationSet]] = {}
-    for rs in results:
-        for rec in rs.recommendations:
-            ticker_votes.setdefault(rec.ticker, []).append(rs)
-
+    """Fusiona recomendaciones por mayoría de votos. Empate → WAIT conservador."""
     all_tickers: set[str] = set()
     for rs in results:
         for rec in rs.recommendations:
@@ -93,29 +89,30 @@ def _merge_by_consensus(results: list[RecommendationSet]) -> RecommendationSet:
 
         actions = [r.action for r in ticker_recs]
         if len(set(a.value for a in actions)) == 1:
-            # Consenso — usar la primera recomendación (mejor contexto)
             merged.append(ticker_recs[0])
         else:
-            # Discrepancia — posición conservadora
             action_counts: dict[str, int] = {}
             for a in actions:
                 action_counts[a.value] = action_counts.get(a.value, 0) + 1
             majority_action = max(action_counts, key=lambda k: action_counts[k])
             best = ticker_recs[0]
-            disagreement_note = f"[Modelos discrepan: {'/'.join(a.value for a in actions)}] {best.reasoning}"
+            disagreement_note = (
+                f"[Modelos discrepan: {'/'.join(a.value for a in actions)}] {best.reasoning}"
+            )
+            try:
+                action_enum = Action(majority_action)
+            except ValueError:
+                action_enum = Action.WAIT
             merged.append(best.model_copy(update={
-                "action": Action(majority_action),
+                "action": action_enum,
                 "reasoning": disagreement_note,
                 "confidence": "LOW",
             }))
 
-    # Market summary: usar el del primer modelo que tenga uno
     summary = next((rs.market_summary for rs in results if rs.market_summary), "")
-    model_note = f" [Consenso: {len(results)} modelos]" if len(results) > 1 else ""
-
     return RecommendationSet(
         recommendations=merged,
-        market_summary=summary + model_note,
+        market_summary=f"{summary} [Consenso: {len(results)} modelos]",
     )
 
 
@@ -146,7 +143,7 @@ async def _run_openrouter(prompt: str, settings: Settings, model: str) -> Recomm
             temperature=0.3,
         )
         response_text = response.choices[0].message.content
-        logger.info(f"{model}: respuesta recibida")
+        logger.debug(f"{model} raw response (first 300): {repr(response_text[:300])}")
         return _parse(response_text)
     except Exception as e:
         logger.warning(f"{model} error: {e}")
@@ -174,5 +171,5 @@ def _parse(text: str) -> RecommendationSet | None:
             market_summary=data.get("market_summary", ""),
         )
     except Exception as e:
-        logger.error(f"Error parseando respuesta del análisis: {e}")
+        logger.error(f"Error parseando respuesta: {e}")
         return None

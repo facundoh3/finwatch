@@ -24,7 +24,14 @@ from core.services.marketaux_client import MarketauxClient
 from core.services.rss_client import fetch_all_tier_a_news
 
 PROMPT_PATH = Path(__file__).parent.parent / "config" / "prompts" / "context_agent.txt"
-QWEN_MODEL = "qwen/qwen3.6-plus-preview:free"
+
+# Modelos de contexto en orden de preferencia (el primero que funcione)
+CONTEXT_MODELS = [
+    "qwen/qwen3.6-plus-preview:free",
+    "meta-llama/llama-3.3-70b-instruct:free",
+    "qwen/qwen3-235b-a22b:free",
+    "mistralai/mistral-7b-instruct:free",
+]
 
 
 async def run(
@@ -153,52 +160,57 @@ async def _filter_with_qwen(
     market: MarketOverview,
     settings: Settings,
 ) -> list[NewsItem]:
-    """Llama a Qwen3.6 para filtrar y puntuar noticias. Fallback: retorna tier A."""
+    """Filtra noticias con el primer modelo de contexto disponible."""
     if not settings.openrouter_api_key or not news_items:
-        # Sin Qwen, devolver solo tier A y limitar cantidad
         tier_a = [n for n in news_items if n.source_tier == "A"]
         return tier_a[:20] or news_items[:20]
 
-    try:
-        prompt_template = PROMPT_PATH.read_text()
-        raw_news_text = "\n".join(
-            f"- [{n.source_tier}] {n.headline} | {n.source} | {n.url}" for n in news_items[:50]
-        )
-        market_text = market.to_context_block()
-        prompt = (
-            prompt_template
-            .replace("{tickers}", ", ".join(tickers))
-            .replace("{raw_news}", raw_news_text)
-            .replace("{market_data}", market_text)
-        ) + "\n/no_think"
+    prompt_template = PROMPT_PATH.read_text()
+    raw_news_text = "\n".join(
+        f"- [{n.source_tier}] {n.headline} | {n.source} | {n.url}" for n in news_items[:50]
+    )
+    market_text = market.to_context_block()
+    base_prompt = (
+        prompt_template
+        .replace("{tickers}", ", ".join(tickers))
+        .replace("{raw_news}", raw_news_text)
+        .replace("{market_data}", market_text)
+    )
 
-        client = build_openrouter_client(settings.openrouter_api_key)
-        response = await client.chat.completions.create(
-            model=QWEN_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=2000,
-        )
-        result = extract_json(response.choices[0].message.content)
-        filtered = result.get("filtered_news", [])
-        logger.info(f"Qwen filtró: {len(filtered)}/{len(news_items)} noticias")
+    client = build_openrouter_client(settings.openrouter_api_key)
 
-        # Reconstruir NewsItems desde la respuesta de Qwen
-        items = []
-        url_to_original = {n.url: n for n in news_items}
-        for f in filtered:
-            url = f.get("url", "")
-            if url in url_to_original:
-                original = url_to_original[url]
-                items.append(original.model_copy(update={
-                    "sentiment_score": f.get("sentiment_score", original.sentiment_score),
-                    "related_tickers": f.get("related_tickers", original.related_tickers),
-                }))
-        return items if items else news_items[:20]
+    for model in CONTEXT_MODELS:
+        # /no_think desactiva el razonamiento visible en modelos Qwen
+        prompt = base_prompt + ("\n/no_think" if model.startswith("qwen/") else "")
+        try:
+            response = await client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=2000,
+            )
+            result = extract_json(response.choices[0].message.content)
+            filtered = result.get("filtered_news", [])
+            logger.info(f"Contexto ({model}): filtró {len(filtered)}/{len(news_items)} noticias")
 
-    except Exception as e:
-        logger.warning(f"Qwen falló, usando fallback: {e}")
-        tier_a = [n for n in news_items if n.source_tier == "A"]
-        return tier_a[:20] or news_items[:20]
+            url_to_original = {n.url: n for n in news_items}
+            items = []
+            for f in filtered:
+                url = f.get("url", "")
+                if url in url_to_original:
+                    original = url_to_original[url]
+                    items.append(original.model_copy(update={
+                        "sentiment_score": f.get("sentiment_score", original.sentiment_score),
+                        "related_tickers": f.get("related_tickers", original.related_tickers),
+                    }))
+            if items:
+                return items
+        except Exception as e:
+            logger.warning(f"Contexto ({model}) falló: {e}")
+            continue
+
+    logger.warning("Todos los modelos de contexto fallaron — usando noticias tier A sin filtrar")
+    tier_a = [n for n in news_items if n.source_tier == "A"]
+    return tier_a[:20] or news_items[:20]
 
 
 async def _fetch_yfinance(tickers: list[str]) -> list[MarketSnapshot]:
