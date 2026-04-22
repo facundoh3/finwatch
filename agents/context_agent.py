@@ -11,7 +11,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from agents.utils import build_openrouter_client, extract_json
+from agents.utils import build_openrouter_client, extract_json, get_free_models
 
 from config.settings import Settings
 from core.models.market import MarketOverview, MarketSnapshot
@@ -24,14 +24,6 @@ from core.services.marketaux_client import MarketauxClient
 from core.services.rss_client import fetch_all_tier_a_news
 
 PROMPT_PATH = Path(__file__).parent.parent / "config" / "prompts" / "context_agent.txt"
-
-# Modelos de contexto en orden de preferencia (el primero que funcione)
-CONTEXT_MODELS = [
-    "qwen/qwen3.6-plus-preview:free",
-    "meta-llama/llama-3.3-70b-instruct:free",
-    "qwen/qwen3-235b-a22b:free",
-    "mistralai/mistral-7b-instruct:free",
-]
 
 
 async def run(
@@ -178,8 +170,9 @@ async def _filter_with_qwen(
     )
 
     client = build_openrouter_client(settings.openrouter_api_key)
+    context_models = await get_free_models(settings.openrouter_api_key)
 
-    for model in CONTEXT_MODELS:
+    for model in context_models:
         # /no_think desactiva el razonamiento visible en modelos Qwen
         prompt = base_prompt + ("\n/no_think" if model.startswith("qwen/") else "")
         try:

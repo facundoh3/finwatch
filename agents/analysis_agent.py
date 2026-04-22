@@ -9,21 +9,12 @@ from pathlib import Path
 
 from loguru import logger
 
-from agents.utils import build_openrouter_client, extract_json
+from agents.utils import build_openrouter_client, extract_json, get_free_models
 from config.settings import Settings
 from core.models.recommendation import Action, AgentContext, Recommendation, RecommendationSet
 
 PROMPT_PATH = Path(__file__).parent.parent / "config" / "prompts" / "analysis_agent.txt"
 CLAUDE_MODEL = "claude-sonnet-4-6"
-
-# Modelos gratuitos de OpenRouter, en orden de preferencia
-FREE_ANALYSIS_MODELS = [
-    "meta-llama/llama-3.3-70b-instruct:free",
-    "qwen/qwen3-235b-a22b:free",
-    "qwen/qwen3.6-plus-preview:free",
-    "microsoft/phi-4:free",
-    "mistralai/mistral-7b-instruct:free",
-]
 
 
 async def run(context: AgentContext, settings: Settings) -> RecommendationSet:
@@ -36,7 +27,8 @@ async def run(context: AgentContext, settings: Settings) -> RecommendationSet:
     results: list[RecommendationSet] = []
 
     if settings.openrouter_api_key:
-        for model in FREE_ANALYSIS_MODELS:
+        models = await get_free_models(settings.openrouter_api_key)
+        for model in models:
             if len(results) >= 2:
                 break
             result = await _run_openrouter(prompt, settings, model)
