@@ -17,7 +17,7 @@ from core.models.recommendation import AgentContext, Recommendation, Recommendat
 
 PROMPT_PATH = Path(__file__).parent.parent / "config" / "prompts" / "analysis_agent.txt"
 
-GEMINI_MODEL = "google/gemini-flash-2.0-exp:free"
+GEMINI_MODEL = "google/gemini-2.0-flash-exp:free"
 LLAMA_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
 CLAUDE_MODEL = "claude-sonnet-4-6"
 
@@ -60,7 +60,7 @@ async def run(context: AgentContext, settings: Settings) -> RecommendationSet:
 
 def _build_prompt(context: AgentContext) -> str:
     template = PROMPT_PATH.read_text()
-    return template.format(context_block=context.to_claude_prompt_block())
+    return template.replace("{context_block}", context.to_claude_prompt_block())
 
 
 def _merge_by_consensus(results: list[RecommendationSet]) -> RecommendationSet:

@@ -165,10 +165,11 @@ async def _filter_with_qwen(
             f"- [{n.source_tier}] {n.headline} | {n.source} | {n.url}" for n in news_items[:50]
         )
         market_text = market.to_context_block()
-        prompt = prompt_template.format(
-            tickers=", ".join(tickers),
-            raw_news=raw_news_text,
-            market_data=market_text,
+        prompt = (
+            prompt_template
+            .replace("{tickers}", ", ".join(tickers))
+            .replace("{raw_news}", raw_news_text)
+            .replace("{market_data}", market_text)
         ) + "\n/no_think"
 
         client = build_openrouter_client(settings.openrouter_api_key)
