@@ -172,14 +172,13 @@ async def _filter_with_qwen(
     client = build_openrouter_client(settings.openrouter_api_key)
     context_models = await get_free_models(settings.openrouter_api_key)
 
-    for model in context_models:
-        # /no_think desactiva el razonamiento visible en modelos Qwen
+    for model in context_models[:5]:  # máximo 5 intentos para no quemar rate limit
         prompt = base_prompt + ("\n/no_think" if model.startswith("qwen/") else "")
         try:
             response = await client.chat.completions.create(
                 model=model,
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=2000,
+                max_tokens=4000,
             )
             result = extract_json(response.choices[0].message.content)
             filtered = result.get("filtered_news", [])

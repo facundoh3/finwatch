@@ -73,12 +73,14 @@ async def _fetch_openrouter_free_models(api_key: str) -> list[str]:
             prompt_cost = str(pricing.get("prompt", "1"))
             completion_cost = str(pricing.get("completion", "1"))
 
-            # Solo modelos que generan texto (excluir audio, imagen, video)
+            # Solo modelos con sufijo :free explícito (excluye Lyria y otros sin sufijo)
+            if ":free" not in mid:
+                continue
+            # Solo modelos que generan texto como output
             if "->text" not in modality:
                 continue
 
-            if ":free" in mid or (prompt_cost == "0" and completion_cost == "0"):
-                free.append(mid)
+            free.append(mid)
 
         # Ordenar por preferencia de calidad
         def _priority(mid: str) -> int:

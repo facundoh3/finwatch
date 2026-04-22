@@ -155,7 +155,8 @@ def main():
         _show_welcome()
         return
 
-    if force_refresh or "analysis_result" not in st.session_state:
+    # Analizar SOLO cuando el usuario hace clic — nunca en re-runs por cambio de tickers
+    if force_refresh:
         with st.spinner("Analizando mercados... (~30 segundos)"):
             try:
                 from agents.orchestrator import analyze
@@ -163,13 +164,18 @@ def main():
                     analyze(
                         tickers_usa=tickers_usa,
                         tickers_byma=tickers_byma,
-                        force_refresh=force_refresh,
+                        force_refresh=True,
                     )
                 )
                 st.session_state["analysis_result"] = (ctx, recs)
             except Exception as e:
                 st.error(f"Error al ejecutar el análisis: {e}")
                 return
+
+    if "analysis_result" not in st.session_state:
+        _show_welcome()
+        st.info("Seleccioná tus tickers y hacé clic en **🔄 Analizar ahora** para comenzar.")
+        return
 
     ctx, recs = st.session_state["analysis_result"]
 
