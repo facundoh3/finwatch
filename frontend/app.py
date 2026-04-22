@@ -72,6 +72,7 @@ def _sidebar(cfg: dict) -> tuple[list[str], list[str], bool]:
     st.sidebar.divider()
     force_refresh = st.sidebar.button("🔄 Analizar ahora", use_container_width=True)
     st.sidebar.divider()
+    _render_market_clock()
     st.sidebar.caption("Cache: 30 min · Noticias: 24hs")
     st.sidebar.caption("IA: modelos gratuitos vía OpenRouter")
 
@@ -90,6 +91,48 @@ def _check_settings():
     if not s.marketaux_api_key:
         issues.append("⚠️ **MARKETAUX_API_KEY** no configurada — menos fuentes de noticias")
     return issues
+
+
+def _render_market_clock():
+    """Muestra el horario del mercado NYSE en hora argentina (ART = UTC-3)."""
+    from datetime import datetime, timezone, timedelta
+
+    ART = timezone(timedelta(hours=-3))
+    ET = timezone(timedelta(hours=-4))   # EDT (verano USA, mar-nov)
+    EST = timezone(timedelta(hours=-5))  # EST (invierno USA, nov-mar)
+
+    now_utc = datetime.now(timezone.utc)
+    # Determinar si USA está en EDT o EST (simplificado: EDT mar-nov, EST nov-mar)
+    month = now_utc.month
+    et_tz = EDT = ET if 3 <= month <= 11 else EST
+
+    now_art = now_utc.astimezone(ART)
+    now_et = now_utc.astimezone(et_tz)
+
+    # NYSE: lunes-viernes 9:30-16:00 ET
+    open_et = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
+    close_et = now_et.replace(hour=16, minute=0, second=0, microsecond=0)
+    is_weekday = now_et.weekday() < 5
+    market_open = is_weekday and open_et <= now_et <= close_et
+
+    open_art = open_et.astimezone(ART).strftime("%H:%M")
+    close_art = close_et.astimezone(ART).strftime("%H:%M")
+
+    if market_open:
+        mins_left = int((close_et - now_et).total_seconds() / 60)
+        st.sidebar.success(f"🟢 NYSE abierto · cierra {close_art} ART ({mins_left}m)")
+    elif is_weekday and now_et < open_et:
+        mins_to = int((open_et - now_et).total_seconds() / 60)
+        st.sidebar.info(f"🕐 NYSE abre {open_art} ART (en {mins_to}m)")
+    else:
+        # Calcular próximo día hábil
+        days_ahead = 1
+        if now_et.weekday() == 4:   # viernes
+            days_ahead = 3
+        elif now_et.weekday() == 5:  # sábado
+            days_ahead = 2
+        st.sidebar.info(f"🔴 NYSE cerrado · reabre lunes {open_art} ART" if now_et.weekday() >= 4
+                        else f"🔴 NYSE cerrado · mañana {open_art} ART")
 
 
 def main():

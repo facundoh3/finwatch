@@ -24,35 +24,26 @@ async def run(context: AgentContext, settings: Settings) -> RecommendationSet:
     Claude sólo si todos los gratuitos fallan y hay créditos disponibles.
     """
     prompt = _build_prompt(context)
-    results: list[RecommendationSet] = []
 
     if settings.openrouter_api_key:
         models = await get_free_models(settings.openrouter_api_key)
-        for model in models:
-            if len(results) >= 2:
-                break
+        for model in models[:12]:  # máximo 12 intentos para no colgar la UI
             result = await _run_openrouter(prompt, settings, model)
             if result and result.recommendations:
-                logger.info(f"Modelo exitoso: {model} ({len(result.recommendations)} recomendaciones)")
-                results.append(result)
+                logger.info(f"Análisis listo con {model} ({len(result.recommendations)} recomendaciones)")
+                return result
 
-    if not results and settings.anthropic_api_key:
+    if settings.anthropic_api_key:
         result = await _run_claude(prompt, settings)
         if result and result.recommendations:
-            results.append(result)
+            return result
 
-    if not results:
-        return RecommendationSet(
-            market_summary=(
-                "Los modelos gratuitos están temporalmente no disponibles (rate limit). "
-                "Esperá unos minutos y volvé a analizar."
-            )
+    return RecommendationSet(
+        market_summary=(
+            "Los modelos gratuitos están temporalmente no disponibles (rate limit). "
+            "Esperá unos minutos y volvé a analizar."
         )
-
-    if len(results) == 1:
-        return results[0]
-
-    return _merge_by_consensus(results)
+    )
 
 
 def _build_prompt(context: AgentContext) -> str:
@@ -131,7 +122,7 @@ async def _run_openrouter(prompt: str, settings: Settings, model: str) -> Recomm
         response = await client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=2000,
+            max_tokens=4000,
             temperature=0.3,
         )
         response_text = response.choices[0].message.content

@@ -67,9 +67,16 @@ async def _fetch_openrouter_free_models(api_key: str) -> list[str]:
         free = []
         for m in data:
             mid = m.get("id", "")
+            arch = m.get("architecture", {})
+            modality = arch.get("modality", "text->text")
             pricing = m.get("pricing", {})
             prompt_cost = str(pricing.get("prompt", "1"))
             completion_cost = str(pricing.get("completion", "1"))
+
+            # Solo modelos que generan texto (excluir audio, imagen, video)
+            if "->text" not in modality:
+                continue
+
             if ":free" in mid or (prompt_cost == "0" and completion_cost == "0"):
                 free.append(mid)
 
