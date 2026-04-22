@@ -100,7 +100,7 @@ async def _fetch_openrouter_free_models(api_key: str) -> list[str]:
 def extract_json(text: str) -> dict:
     """
     Extrae JSON de la respuesta de cualquier LLM de forma robusta.
-    Maneja: <think> reasoning tokens, bloques markdown, texto extra antes/después.
+    Maneja: <think> reasoning tokens, bloques markdown, texto extra, errores comunes de LLMs.
     """
     # Quitar bloques de razonamiento <think>...</think> (Qwen, DeepSeek R1)
     text = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE)
@@ -127,7 +127,22 @@ def extract_json(text: str) -> dict:
     if end == -1:
         raise ValueError("JSON incompleto — llaves sin cerrar")
 
-    return json.loads(text[start:end])
+    candidate = text[start:end]
+
+    # Intentar parse directo
+    try:
+        return json.loads(candidate)
+    except json.JSONDecodeError:
+        pass
+
+    # Reparar errores comunes de LLMs
+    fixed = candidate
+    fixed = re.sub(r"\bNone\b", "null", fixed)
+    fixed = re.sub(r"\bTrue\b", "true", fixed)
+    fixed = re.sub(r"\bFalse\b", "false", fixed)
+    fixed = re.sub(r",(\s*[}\]])", r"\1", fixed)   # trailing commas
+
+    return json.loads(fixed)
 
 
 def build_openrouter_client(api_key: str):
