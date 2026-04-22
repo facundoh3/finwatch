@@ -8,7 +8,7 @@ python3 --version || { echo "Python 3 no encontrado"; exit 1; }
 
 # Instalar dependencias
 echo "Instalando dependencias..."
-pip install -r requirements.txt -q
+python3 -m pip install -r requirements.txt
 
 # Crear directorios necesarios
 mkdir -p data/cache data/raw
