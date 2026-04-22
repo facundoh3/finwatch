@@ -1,15 +1,14 @@
 """
-finwatch — App financiera personal
-Entry point de Streamlit.
-Ejecutar con: streamlit run frontend/app.py
+finwatch — Asistente personal de finanzas
+Ejecutar con: bash run.sh
 """
 import asyncio
 import sys
 from pathlib import Path
 
 import streamlit as st
+import yaml
 
-# Agrega el root del proyecto al path para importar módulos
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 st.set_page_config(
@@ -19,9 +18,16 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+_TICKERS_PATH = Path(__file__).parent.parent / "config" / "tickers.yaml"
+
+
+def _load_tickers_config() -> dict:
+    if _TICKERS_PATH.exists():
+        return yaml.safe_load(_TICKERS_PATH.read_text())
+    return {}
+
 
 def _run_async(coro):
-    """Helper para correr coroutines en Streamlit."""
     try:
         loop = asyncio.get_event_loop()
         if loop.is_running():
@@ -33,54 +39,81 @@ def _run_async(coro):
     return asyncio.run(coro)
 
 
-def _sidebar() -> tuple[list[str], list[str], bool]:
-    """Sidebar con selector de tickers y controles."""
-    import yaml
-    tickers_path = Path(__file__).parent.parent / "config" / "tickers.yaml"
-    defaults = yaml.safe_load(tickers_path.read_text()) if tickers_path.exists() else {}
-
+def _sidebar(cfg: dict) -> tuple[list[str], list[str], bool]:
     st.sidebar.title("📈 finwatch")
-    st.sidebar.caption("App financiera personal")
+    st.sidebar.caption("Asistente personal de finanzas")
     st.sidebar.divider()
 
-    st.sidebar.subheader("Mercado USA")
-    default_usa = defaults.get("tickers_usa", ["AAPL", "NVDA", "TSLA", "MSFT", "SPY"])
-    tickers_usa = st.sidebar.multiselect(
-        "Acciones USA",
-        options=default_usa + ["AMZN", "META", "GOOGL", "JPM", "BAC"],
-        default=default_usa[:4],
+    # Categorías USA
+    st.sidebar.subheader("🇺🇸 Índices y ETFs")
+    all_indices = cfg.get("indices_usa", []) + cfg.get("commodities", []) + cfg.get("sectores_usa", [])
+    tickers_etf = st.sidebar.multiselect(
+        "Índices / Sectores / Commodities",
+        options=all_indices,
+        default=cfg.get("indices_usa", [])[:3] + cfg.get("commodities", [])[:2],
     )
 
-    st.sidebar.subheader("Mercado ARG")
-    default_byma = defaults.get("tickers_byma", ["YPFD", "GGAL", "TXAR", "BBAR", "PAMP"])
+    st.sidebar.subheader("🏢 Acciones USA")
+    acciones_usa = cfg.get("acciones_usa", [])
+    tickers_acciones = st.sidebar.multiselect(
+        "Acciones individuales",
+        options=acciones_usa + ["META", "GOOGL", "JPM", "BAC", "AMD"],
+        default=acciones_usa[:3],
+    )
+
+    st.sidebar.subheader("🇦🇷 Argentina")
+    byma_opts = cfg.get("tickers_byma", [])
     tickers_byma = st.sidebar.multiselect(
-        "Acciones BYMA",
-        options=default_byma,
-        default=default_byma[:3],
+        "BYMA / ADRs",
+        options=byma_opts + cfg.get("tickers_arg_adr", []),
+        default=byma_opts[:3],
     )
 
     st.sidebar.divider()
-    force_refresh = st.sidebar.button("🔄 Actualizar análisis", use_container_width=True)
-
+    force_refresh = st.sidebar.button("🔄 Analizar ahora", use_container_width=True)
     st.sidebar.divider()
-    st.sidebar.caption("ℹ️ Cache: 30 min | Noticias: últimas 24hs")
-    st.sidebar.caption("Modelos: Qwen3.6 (contexto) + Claude Sonnet (análisis)")
+    st.sidebar.caption("Cache: 30 min · Noticias: 24hs")
+    st.sidebar.caption("Qwen3.6 (contexto) · Claude (análisis)")
 
+    tickers_usa = tickers_etf + tickers_acciones
     return tickers_usa, tickers_byma, force_refresh
 
 
+def _check_settings():
+    from config.settings import get_settings
+    s = get_settings()
+    issues = []
+    if not s.anthropic_api_key:
+        issues.append("❌ **ANTHROPIC_API_KEY** no configurada — sin análisis Claude")
+    if not s.openrouter_api_key:
+        issues.append("⚠️ **OPENROUTER_API_KEY** no configurada — sin filtrado Qwen")
+    if not s.finnhub_api_key:
+        issues.append("⚠️ **FINNHUB_API_KEY** no configurada — datos limitados")
+    return issues
+
+
 def main():
-    tickers_usa, tickers_byma, force_refresh = _sidebar()
+    cfg = _load_tickers_config()
+    tickers_usa, tickers_byma, force_refresh = _sidebar(cfg)
 
     st.title("📈 finwatch")
-    st.caption("Tu app financiera personal — mercados USA y Argentina")
+    st.caption("Tu asistente personal de finanzas — mercados USA y Argentina")
+
+    # Mostrar advertencias de configuración
+    issues = _check_settings()
+    if issues:
+        with st.expander("⚙️ Configuración incompleta", expanded=True):
+            for issue in issues:
+                st.markdown(issue)
+            st.info("Editá `.env` con tus API keys y reiniciá la app.")
 
     if not tickers_usa and not tickers_byma:
-        st.warning("Seleccioná al menos un ticker en la barra lateral.")
+        st.info("Seleccioná tickers en la barra lateral y hacé clic en **Analizar ahora**.")
+        _show_welcome()
         return
 
     if force_refresh or "analysis_result" not in st.session_state:
-        with st.spinner("Analizando mercados... (puede demorar ~30 segundos)"):
+        with st.spinner("Analizando mercados... (~30 segundos)"):
             try:
                 from agents.orchestrator import analyze
                 ctx, recs = _run_async(
@@ -93,83 +126,112 @@ def main():
                 st.session_state["analysis_result"] = (ctx, recs)
             except Exception as e:
                 st.error(f"Error al ejecutar el análisis: {e}")
-                st.info("Verificá que las API keys estén configuradas en .env")
                 return
 
     ctx, recs = st.session_state["analysis_result"]
 
-    # Market summary
+    # Resumen del mercado
     if recs.market_summary:
-        st.info(f"**Resumen del mercado:** {recs.market_summary}")
+        st.info(f"**Panorama del mercado hoy:** {recs.market_summary}")
 
-    # Quick stats
+    # Métricas rápidas
     col1, col2, col3, col4 = st.columns(4)
-    buy_count = len(recs.by_action("BUY"))
-    wait_count = len(recs.by_action("WAIT"))
-    avoid_count = len(recs.by_action("AVOID"))
-    news_count = len(ctx.news.items)
-
-    col1.metric("✅ BUY", buy_count)
-    col2.metric("⏳ WAIT", wait_count)
-    col3.metric("❌ AVOID", avoid_count)
-    col4.metric("📰 Noticias", news_count)
+    col1.metric("✅ Comprar", len(recs.by_action("BUY")))
+    col2.metric("⏳ Esperar", len(recs.by_action("WAIT")))
+    col3.metric("❌ Evitar", len(recs.by_action("AVOID")))
+    col4.metric("📰 Noticias", len(ctx.news.items))
 
     st.divider()
 
-    # Tabs de navegación
-    tab1, tab2, tab3 = st.tabs(["📊 Dashboard", "📰 Noticias", "💡 Recomendaciones"])
+    tab1, tab2, tab3 = st.tabs(["💡 Recomendaciones", "📊 Precios", "📰 Noticias"])
 
     with tab1:
-        _render_dashboard(ctx, recs)
-    with tab2:
-        _render_noticias(ctx)
-    with tab3:
         _render_recomendaciones(recs, ctx)
+    with tab2:
+        _render_precios(ctx)
+    with tab3:
+        _render_noticias(ctx)
 
 
-def _render_dashboard(ctx, recs):
-    from frontend.components.ticker_card import render_ticker_card
-    from frontend.components.tradingview_widget import render_market_overview
+def _show_welcome():
+    st.markdown("""
+    ### ¿Qué hace finwatch?
+    - 📊 Monitorea índices, commodities, sectores y acciones en USA y Argentina
+    - 📰 Analiza noticias financieras con IA y explica su impacto
+    - 💡 Te dice qué **comprar, esperar o evitar** hoy
+    - 🔍 Cubre oro, petróleo, real estate, tecnología, energía y más
+    """)
 
-    st.subheader("Vista general del mercado")
-    render_market_overview()
 
-    st.subheader("Tus tickers")
-    snapshots = ctx.market.snapshots
-    if not snapshots:
-        st.info("No se pudieron obtener datos de mercado. Verificá las API keys.")
+def _render_recomendaciones(recs, ctx):
+    if not recs.recommendations:
+        st.warning("No hay recomendaciones. Verificá las API keys y volvé a analizar.")
         return
 
-    cols = st.columns(min(len(snapshots), 3))
-    for i, snap in enumerate(snapshots):
-        rec = recs.get(snap.ticker)
-        with cols[i % 3]:
-            render_ticker_card(snap, rec)
+    order = {"BUY": 0, "WAIT": 1, "AVOID": 2}
+    sorted_recs = sorted(recs.recommendations, key=lambda r: order.get(r.action.value, 3))
+
+    for rec in sorted_recs:
+        display = rec.to_display_dict()
+        colors = {"BUY": "#1a4a1a", "WAIT": "#4a3a00", "AVOID": "#4a1010"}
+        bg = colors.get(rec.action.value, "#222")
+
+        snap = ctx.market.get(rec.ticker)
+        price_info = f" · ${snap.current_price:.2f} ({snap.change_pct:+.1f}%)" if snap else ""
+
+        with st.expander(
+            f"{display['action_label']} **{rec.ticker}**{price_info} — {display['confidence_label']}",
+            expanded=(rec.action.value == "BUY"),
+        ):
+            st.markdown(
+                f"<div style='background:{bg};padding:12px;border-radius:8px;margin-bottom:8px'>"
+                f"<p style='margin:0'>{rec.reasoning}</p>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+            if display["wait_info"]:
+                st.info(f"⏳ {display['wait_info']}")
+            if rec.sources:
+                st.markdown("**Fuentes:**")
+                for s in rec.sources[:3]:
+                    st.markdown(f"- {s}")
+
+
+def _render_precios(ctx):
+    if not ctx.market.snapshots:
+        st.info("No hay datos de precio disponibles.")
+        return
+
+    from core.models.market import PriceDirection
+    rows = []
+    for s in sorted(ctx.market.snapshots, key=lambda x: abs(x.change_pct), reverse=True):
+        arrow = "▲" if s.direction == PriceDirection.UP else ("▼" if s.direction == PriceDirection.DOWN else "▶")
+        color = "🟢" if s.direction == PriceDirection.UP else ("🔴" if s.direction == PriceDirection.DOWN else "⚪")
+        rows.append({
+            "": color,
+            "Ticker": s.ticker,
+            "Precio": f"${s.current_price:.2f}",
+            "Cambio %": f"{arrow} {s.change_pct:+.2f}%",
+            "Volumen": f"{s.volume/1_000_000:.1f}M" if s.volume >= 1_000_000 else str(s.volume),
+        })
+
+    st.dataframe(rows, use_container_width=True, hide_index=True)
 
 
 def _render_noticias(ctx):
     from frontend.components.news_card import render_news_card
+    from core.models.news import SentimentLabel
 
-    st.subheader("Noticias relevantes")
-
-    # Filtros
     col1, col2 = st.columns(2)
     with col1:
-        sentiment_filter = st.selectbox(
-            "Filtrar por sentimiento",
-            ["Todos", "POSITIVE", "NEGATIVE", "NEUTRAL"],
-        )
+        sentiment_filter = st.selectbox("Sentimiento", ["Todos", "POSITIVE", "NEGATIVE", "NEUTRAL"])
     with col2:
-        tier_filter = st.selectbox(
-            "Filtrar por fuente",
-            ["Todas", "Tier A (verificadas)", "Tier B"],
-        )
+        tier_filter = st.selectbox("Fuente", ["Todas", "Verificadas (Tier A)", "Tier B"])
 
     items = ctx.news.items
     if sentiment_filter != "Todos":
-        from core.models.news import SentimentLabel
         items = [n for n in items if n.sentiment_label == SentimentLabel(sentiment_filter)]
-    if tier_filter == "Tier A (verificadas)":
+    if tier_filter == "Verificadas (Tier A)":
         items = [n for n in items if n.source_tier == "A"]
     elif tier_filter == "Tier B":
         items = [n for n in items if n.source_tier == "B"]
@@ -180,56 +242,6 @@ def _render_noticias(ctx):
 
     for news in items[:30]:
         render_news_card(news)
-
-
-def _render_recomendaciones(recs, ctx):
-    from frontend.components.tradingview_widget import render_mini_chart
-
-    st.subheader("Recomendaciones de inversión")
-
-    if not recs.recommendations:
-        st.warning("No hay recomendaciones disponibles. Ejecutá el análisis primero.")
-        return
-
-    # Ordenar: BUY primero, luego WAIT, luego AVOID
-    order = {"BUY": 0, "WAIT": 1, "AVOID": 2}
-    sorted_recs = sorted(recs.recommendations, key=lambda r: order.get(r.action.value, 3))
-
-    for rec in sorted_recs:
-        display = rec.to_display_dict()
-        action_colors = {"BUY": "#1a7a1a", "WAIT": "#665500", "AVOID": "#6a1111"}
-        bg_color = action_colors.get(rec.action.value, "#333")
-
-        with st.expander(
-            f"{display['action_label']} **{rec.ticker}** — {display['confidence_label']}",
-            expanded=(rec.action.value == "BUY"),
-        ):
-            col1, col2 = st.columns([3, 2])
-            with col1:
-                st.markdown(
-                    f"<div style='background:{bg_color};padding:12px;border-radius:8px'>"
-                    f"<h4>{display['action_label']} {rec.ticker}</h4>"
-                    f"<p>{display['reasoning']}</p>"
-                    f"</div>",
-                    unsafe_allow_html=True,
-                )
-                if display["wait_info"]:
-                    st.info(f"⏳ {display['wait_info']}")
-
-                if rec.sources:
-                    st.markdown("**Fuentes:**")
-                    for source in rec.sources[:3]:
-                        st.markdown(f"- [{source[:60]}...]({source})")
-
-                # Snap del precio
-                snap = ctx.market.get(rec.ticker)
-                if snap:
-                    st.caption(
-                        f"Precio actual: ${snap.current_price:.2f} ({snap.change_pct:+.2f}%)"
-                    )
-
-            with col2:
-                render_mini_chart(rec.ticker)
 
 
 if __name__ == "__main__":
