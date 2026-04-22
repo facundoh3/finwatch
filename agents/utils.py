@@ -8,8 +8,10 @@ import re
 def extract_json(text: str) -> dict:
     """
     Extrae JSON de la respuesta de cualquier LLM de forma robusta.
-    Maneja: bloques markdown ```json, texto antes/después, saltos de línea iniciales.
+    Maneja: bloques markdown ```json, <think> reasoning tokens (Qwen3.6), texto antes/después.
     """
+    # Quitar bloques de razonamiento <think>...</think> (Qwen3.6 y otros reasoning models)
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
     # Quitar bloques markdown ```json ... ```
     text = re.sub(r"```(?:json)?\s*", "", text)
     text = re.sub(r"```\s*", "", text)

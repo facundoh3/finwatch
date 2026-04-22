@@ -169,7 +169,7 @@ async def _filter_with_qwen(
             tickers=", ".join(tickers),
             raw_news=raw_news_text,
             market_data=market_text,
-        )
+        ) + "\n/no_think"
 
         client = build_openrouter_client(settings.openrouter_api_key)
         response = await client.chat.completions.create(

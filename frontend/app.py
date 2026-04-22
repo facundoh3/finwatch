@@ -73,7 +73,7 @@ def _sidebar(cfg: dict) -> tuple[list[str], list[str], bool]:
     force_refresh = st.sidebar.button("🔄 Analizar ahora", use_container_width=True)
     st.sidebar.divider()
     st.sidebar.caption("Cache: 30 min · Noticias: 24hs")
-    st.sidebar.caption("Qwen3.6 (contexto) · Claude (análisis)")
+    st.sidebar.caption("Qwen3.6 (contexto) · Gemini Flash + Llama 3.3 (análisis)")
 
     tickers_usa = tickers_etf + tickers_acciones
     return tickers_usa, tickers_byma, force_refresh
