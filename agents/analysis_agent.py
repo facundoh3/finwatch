@@ -1,15 +1,12 @@
 """
-Analysis Agent — pipeline de análisis multimodelo.
-
-Prueba modelos gratuitos de OpenRouter en orden hasta obtener resultados.
-Si se obtienen 2 resultados, se fusionan por consenso.
-Claude es último recurso (requiere créditos).
+Analysis Agent — genera recomendaciones BUY/WAIT/AVOID.
+Usa race_models: corre 4 modelos en paralelo, toma el primero que responda (max 25s).
 """
 from pathlib import Path
 
 from loguru import logger
 
-from agents.utils import build_openrouter_client, extract_json, get_free_models
+from agents.utils import build_openrouter_client, extract_json, get_free_models, race_models
 from config.settings import Settings
 from core.models.recommendation import Action, AgentContext, Recommendation, RecommendationSet
 
@@ -19,18 +16,25 @@ CLAUDE_MODEL = "claude-sonnet-4-6"
 
 async def run(context: AgentContext, settings: Settings) -> RecommendationSet:
     """
-    Prueba modelos gratuitos en orden. Para después de conseguir 2 resultados
-    válidos (para consenso) o devuelve el primero que funcione.
-    Claude sólo si todos los gratuitos fallan y hay créditos disponibles.
+    Corre hasta 4 modelos en paralelo (max 25s). Si todos fallan, intenta Claude.
     """
     prompt = _build_prompt(context)
 
     if settings.openrouter_api_key:
+        client = build_openrouter_client(settings.openrouter_api_key)
         models = await get_free_models(settings.openrouter_api_key)
-        for model in models[:8]:  # máximo 8 intentos — con timeout 15s = max 2 min
-            result = await _run_openrouter(prompt, settings, model)
+        content = await race_models(
+            client,
+            messages=[{"role": "user", "content": prompt}],
+            models=models,
+            max_tokens=4000,
+            temperature=0.3,
+            total_timeout=25.0,
+        )
+        if content:
+            result = _parse(content)
             if result and result.recommendations:
-                logger.info(f"Análisis listo con {model} ({len(result.recommendations)} recomendaciones)")
+                logger.info(f"Análisis listo ({len(result.recommendations)} recomendaciones)")
                 return result
 
     if settings.anthropic_api_key:
@@ -40,8 +44,8 @@ async def run(context: AgentContext, settings: Settings) -> RecommendationSet:
 
     return RecommendationSet(
         market_summary=(
-            "Los modelos gratuitos están temporalmente no disponibles (rate limit). "
-            "Esperá unos minutos y volvé a analizar."
+            "Los modelos de IA no respondieron a tiempo. "
+            "Esperá 2-3 minutos y volvé a analizar."
         )
     )
 
@@ -51,58 +55,10 @@ def _build_prompt(context: AgentContext) -> str:
     return template.replace("{context_block}", context.to_claude_prompt_block())
 
 
-def _merge_by_consensus(results: list[RecommendationSet]) -> RecommendationSet:
-    """Fusiona recomendaciones por mayoría de votos. Empate → WAIT conservador."""
-    all_tickers: set[str] = set()
-    for rs in results:
-        for rec in rs.recommendations:
-            all_tickers.add(rec.ticker)
-
-    merged: list[Recommendation] = []
-    for ticker in all_tickers:
-        ticker_recs: list[Recommendation] = []
-        for rs in results:
-            for rec in rs.recommendations:
-                if rec.ticker == ticker:
-                    ticker_recs.append(rec)
-                    break
-
-        if not ticker_recs:
-            continue
-
-        actions = [r.action for r in ticker_recs]
-        if len(set(a.value for a in actions)) == 1:
-            merged.append(ticker_recs[0])
-        else:
-            action_counts: dict[str, int] = {}
-            for a in actions:
-                action_counts[a.value] = action_counts.get(a.value, 0) + 1
-            majority_action = max(action_counts, key=lambda k: action_counts[k])
-            best = ticker_recs[0]
-            disagreement_note = (
-                f"[Modelos discrepan: {'/'.join(a.value for a in actions)}] {best.reasoning}"
-            )
-            try:
-                action_enum = Action(majority_action)
-            except ValueError:
-                action_enum = Action.WAIT
-            merged.append(best.model_copy(update={
-                "action": action_enum,
-                "reasoning": disagreement_note,
-                "confidence": "LOW",
-            }))
-
-    summary = next((rs.market_summary for rs in results if rs.market_summary), "")
-    return RecommendationSet(
-        recommendations=merged,
-        market_summary=f"{summary} [Consenso: {len(results)} modelos]",
-    )
-
-
 async def _run_claude(prompt: str, settings: Settings) -> RecommendationSet | None:
     try:
         import anthropic
-        client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+        client = anthropia.AsyncAnthropic(api_key=settings.anthropic_api_key)
         message = await client.messages.create(
             model=CLAUDE_MODEL,
             max_tokens=1500,
@@ -113,23 +69,6 @@ async def _run_claude(prompt: str, settings: Settings) -> RecommendationSet | No
         return _parse(response_text)
     except Exception as e:
         logger.warning(f"Claude error: {e}")
-        return None
-
-
-async def _run_openrouter(prompt: str, settings: Settings, model: str) -> RecommendationSet | None:
-    try:
-        client = build_openrouter_client(settings.openrouter_api_key)
-        response = await client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=4000,
-            temperature=0.3,
-        )
-        response_text = response.choices[0].message.content
-        logger.debug(f"{model} raw response (first 300): {repr(response_text[:300])}")
-        return _parse(response_text)
-    except Exception as e:
-        logger.warning(f"{model} error: {e}")
         return None
 
 

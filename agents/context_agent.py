@@ -1,18 +1,13 @@
 """
-Context Agent — usa Qwen3.6 (gratis via OpenRouter) para filtrar y resumir
-noticias y datos de mercado antes de enviárselos a Claude.
-
-Estrategia de tokens:
-- Qwen procesa el volumen (1M contexto, gratis)
-- Solo pasa < 4000 tokens comprimidos al analysis_agent
+Context Agent — filtra y resume noticias antes de enviárselas al analysis_agent.
+Usa race_models: corre 4 modelos en paralelo, toma el primero que responda (max 15s).
 """
 import asyncio
 from pathlib import Path
 
 from loguru import logger
 
-from agents.utils import build_openrouter_client, extract_json, get_free_models
-
+from agents.utils import build_openrouter_client, extract_json, get_free_models, race_models
 from config.settings import Settings
 from core.models.market import MarketOverview, MarketSnapshot
 from core.models.news import NewsCollection, NewsItem
@@ -32,14 +27,6 @@ async def run(
     settings: Settings,
     cache: CacheService | None = None,
 ) -> AgentContext:
-    """
-    Ejecuta el pipeline de contexto:
-    1. Busca en cache (30 min TTL)
-    2. Fetch datos de mercado USA (Finnhub) + ARG (BYMA)
-    3. Fetch noticias (Marketaux + RSS tier A + Finnhub)
-    4. Llama a Qwen para filtrar/resumir
-    5. Retorna AgentContext comprimido
-    """
     all_tickers = list(set(tickers_usa + tickers_byma))
     cache_key = f"context_{'_'.join(sorted(all_tickers))}"
 
@@ -57,8 +44,7 @@ async def run(
         return_exceptions=False,
     )
 
-    # Filtrar y resumir con Qwen
-    filtered_news = await _filter_with_qwen(news_items, all_tickers, market_overview, settings)
+    filtered_news = await _filter_news(news_items, all_tickers, market_overview, settings)
 
     news_collection = NewsCollection(
         items=filtered_news,
@@ -83,11 +69,9 @@ async def _fetch_market_data(
 ) -> MarketOverview:
     snapshots: list[MarketSnapshot] = []
 
-    # USA via Finnhub
     if settings.finnhub_api_key:
         finnhub = FinnhubClient(settings.finnhub_api_key)
-        tasks = [finnhub.get_quote(t) for t in tickers_usa]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        results = await asyncio.gather(*[finnhub.get_quote(t) for t in tickers_usa], return_exceptions=True)
         for r in results:
             if isinstance(r, MarketSnapshot):
                 snapshots.append(r)
@@ -97,7 +81,6 @@ async def _fetch_market_data(
         logger.warning("FINNHUB_API_KEY no configurada — usando yfinance como fallback")
         snapshots.extend(await _fetch_yfinance(tickers_usa))
 
-    # ARG via BYMA
     if tickers_byma:
         try:
             byma = BYMAClient()
@@ -122,8 +105,7 @@ async def _fetch_all_news(tickers: list[str], settings: Settings) -> list[NewsIt
 
     if settings.finnhub_api_key:
         finnhub = FinnhubClient(settings.finnhub_api_key)
-        news_tasks = [finnhub.get_company_news(t, settings.news_hours_back) for t in tickers[:5]]
-        tasks.extend(news_tasks)
+        tasks.extend([finnhub.get_company_news(t, settings.news_hours_back) for t in tickers[:5]])
         tasks.append(finnhub.get_market_news())
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -134,7 +116,6 @@ async def _fetch_all_news(tickers: list[str], settings: Settings) -> list[NewsIt
         elif isinstance(r, Exception):
             logger.warning(f"Error fetching news: {r}")
 
-    # Deduplicar por URL
     seen_urls: set[str] = set()
     unique: list[NewsItem] = []
     for item in items:
@@ -146,44 +127,46 @@ async def _fetch_all_news(tickers: list[str], settings: Settings) -> list[NewsIt
     return unique
 
 
-async def _filter_with_qwen(
+async def _filter_news(
     news_items: list[NewsItem],
     tickers: list[str],
     market: MarketOverview,
     settings: Settings,
 ) -> list[NewsItem]:
-    """Filtra noticias con el primer modelo de contexto disponible."""
+    """
+    Corre 4 modelos en paralelo (max 15s total).
+    Si ninguno responde, usa noticias tier A directamente sin LLM.
+    """
     if not settings.openrouter_api_key or not news_items:
         tier_a = [n for n in news_items if n.source_tier == "A"]
         return tier_a[:20] or news_items[:20]
 
-    prompt_template = PROMPT_PATH.read_text()
     raw_news_text = "\n".join(
         f"- [{n.source_tier}] {n.headline} | {n.source} | {n.url}" for n in news_items[:50]
     )
-    market_text = market.to_context_block()
-    base_prompt = (
-        prompt_template
+    prompt = (
+        PROMPT_PATH.read_text()
         .replace("{tickers}", ", ".join(tickers))
         .replace("{raw_news}", raw_news_text)
-        .replace("{market_data}", market_text)
+        .replace("{market_data}", market.to_context_block())
     )
 
     client = build_openrouter_client(settings.openrouter_api_key)
-    context_models = await get_free_models(settings.openrouter_api_key)
+    models = await get_free_models(settings.openrouter_api_key)
 
-    for model in context_models[:5]:  # máximo 5 intentos para no quemar rate limit
-        prompt = base_prompt + ("\n/no_think" if model.startswith("qwen/") else "")
+    content = await race_models(
+        client,
+        messages=[{"role": "user", "content": prompt}],
+        models=models,
+        max_tokens=4000,
+        total_timeout=15.0,
+    )
+
+    if content:
         try:
-            response = await client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=4000,
-            )
-            result = extract_json(response.choices[0].message.content)
+            result = extract_json(content)
             filtered = result.get("filtered_news", [])
-            logger.info(f"Contexto ({model}): filtró {len(filtered)}/{len(news_items)} noticias")
-
+            logger.info(f"Contexto: {len(filtered)}/{len(news_items)} noticias seleccionadas")
             url_to_original = {n.url: n for n in news_items}
             items = []
             for f in filtered:
@@ -197,16 +180,14 @@ async def _filter_with_qwen(
             if items:
                 return items
         except Exception as e:
-            logger.warning(f"Contexto ({model}) falló: {e}")
-            continue
+            logger.warning(f"Error parseando respuesta de contexto: {e}")
 
-    logger.warning("Todos los modelos de contexto fallaron — usando noticias tier A sin filtrar")
+    logger.warning("Contexto: modelos no disponibles — usando noticias tier A")
     tier_a = [n for n in news_items if n.source_tier == "A"]
     return tier_a[:20] or news_items[:20]
 
 
 async def _fetch_yfinance(tickers: list[str]) -> list[MarketSnapshot]:
-    """Fallback con yfinance cuando Finnhub no está disponible."""
     try:
         import yfinance as yf
         snapshots = []

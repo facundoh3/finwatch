@@ -1,43 +1,100 @@
 """
 Utilidades compartidas entre agentes.
 """
+import asyncio
 import json
 import re
 import time
 
 from loguru import logger
 
-# Cache de modelos gratuitos disponibles (TTL 10 minutos)
 _models_cache: dict = {"models": [], "ts": 0.0}
 
-# Fallback estático — solo el que confirmamos que existe (aunque esté rate-limited)
+KNOWN_WORKING = "inclusionai/ling-2.6-flash:free"
+
 _FALLBACK_FREE_MODELS = [
+    "inclusionai/ling-2.6-flash:free",
     "meta-llama/llama-3.3-70b-instruct:free",
-    "meta-llama/llama-3.1-70b-instruct:free",
     "google/gemini-flash-1.5:free",
     "deepseek/deepseek-r1:free",
-    "deepseek/deepseek-chat:free",
 ]
 
-# Patrones de modelos preferidos — primero los que NO son Venice (menos rate limit)
-# Venice aloja: llama-3.3, qwen3-next, qwen3-coder, dolphin-mistral
+# Venice aloja: llama-3.3, qwen3, dolphin — los pone al final porque aguantan la conexión 30-60s
 _PREFER = [
-    "ling",          # inclusionai/ling-2.6-flash — funciona bien, no Venice
-    "gemma",         # Google AI Studio
-    "nemotron",      # Nvidia
-    "deepseek-v4",   # Crucible
-    "minimax",       # MiniMax
-    "llama-3.3",     # Venice — rate-limited seguido, ir al final
+    "ling",
+    "gemma",
+    "nemotron",
+    "deepseek-v4",
+    "minimax",
+    "llama-3.3",
     "qwen3",
     "dolphin",
 ]
 
 
+async def race_models(
+    client,
+    messages: list[dict],
+    models: list[str],
+    max_tokens: int = 4000,
+    temperature: float | None = None,
+    total_timeout: float = 20.0,
+    per_model_timeout: float = 12.0,
+) -> str | None:
+    """
+    Corre los primeros 4 modelos EN PARALELO y retorna la primera respuesta válida.
+    Cancela el resto cuando uno gana. Total máximo = total_timeout segundos,
+    sin importar cuántos modelos Venice están colgados.
+    """
+    all_models = [KNOWN_WORKING] + [m for m in models if m != KNOWN_WORKING]
+    racing = all_models[:4]
+    logger.debug(f"race_models: compitiendo {racing}")
+
+    async def _call(model: str) -> tuple[str, str]:
+        kwargs: dict = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "timeout": per_model_timeout,
+        }
+        if temperature is not None:
+            kwargs["temperature"] = temperature
+        resp = await client.chat.completions.create(**kwargs)
+        content = resp.choices[0].message.content
+        if not content:
+            raise ValueError("respuesta vacía")
+        return content, model
+
+    tasks = [asyncio.create_task(_call(m)) for m in racing]
+    task_model = {t: m for t, m in zip(tasks, racing)}
+    pending = set(tasks)
+
+    try:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + total_timeout
+        while pending:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                logger.warning("race_models: tiempo total agotado")
+                break
+            done, pending = await asyncio.wait(
+                pending, timeout=remaining, return_when=asyncio.FIRST_COMPLETED
+            )
+            for task in done:
+                try:
+                    content, model = task.result()
+                    logger.info(f"Modelo ganador: {model}")
+                    return content
+                except Exception as e:
+                    logger.warning(f"{task_model.get(task, '?')} falló: {e}")
+    finally:
+        for t in pending:
+            t.cancel()
+
+    return None
+
+
 async def get_free_models(api_key: str) -> list[str]:
-    """
-    Devuelve la lista de modelos gratuitos disponibles en OpenRouter ahora mismo.
-    Cachea el resultado 10 minutos para no repetir la llamada.
-    """
     global _models_cache
     now = time.time()
     if _models_cache["models"] and now - _models_cache["ts"] < 600:
@@ -70,20 +127,12 @@ async def _fetch_openrouter_free_models(api_key: str) -> list[str]:
             mid = m.get("id", "")
             arch = m.get("architecture", {})
             modality = arch.get("modality", "text->text")
-            pricing = m.get("pricing", {})
-            prompt_cost = str(pricing.get("prompt", "1"))
-            completion_cost = str(pricing.get("completion", "1"))
-
-            # Solo modelos con sufijo :free explícito (excluye Lyria y otros sin sufijo)
             if ":free" not in mid:
                 continue
-            # Solo modelos que generan texto como output
             if "->text" not in modality:
                 continue
-
             free.append(mid)
 
-        # Ordenar por preferencia de calidad
         def _priority(mid: str) -> int:
             for i, pat in enumerate(_PREFER):
                 if pat in mid:
@@ -99,13 +148,7 @@ async def _fetch_openrouter_free_models(api_key: str) -> list[str]:
 
 
 def extract_json(text: str) -> dict:
-    """
-    Extrae JSON de la respuesta de cualquier LLM de forma robusta.
-    Maneja: <think> reasoning tokens, bloques markdown, texto extra, errores comunes de LLMs.
-    """
-    # Quitar bloques de razonamiento <think>...</think> (Qwen, DeepSeek R1)
     text = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE)
-    # Quitar bloques markdown ```json ... ```
     text = re.sub(r"```(?:json)?\s*", "", text)
     text = re.sub(r"```\s*", "", text)
     text = text.strip()
@@ -130,26 +173,21 @@ def extract_json(text: str) -> dict:
 
     candidate = text[start:end]
 
-    # Intentar parse directo
     try:
         return json.loads(candidate)
     except json.JSONDecodeError:
         pass
 
-    # Reparar errores comunes de LLMs
     fixed = candidate
     fixed = re.sub(r"\bNone\b", "null", fixed)
     fixed = re.sub(r"\bTrue\b", "true", fixed)
     fixed = re.sub(r"\bFalse\b", "false", fixed)
-    fixed = re.sub(r",(\s*[}\]])", r"\1", fixed)   # trailing commas
+    fixed = re.sub(r",(\s*[}\]])", r"\1", fixed)
 
     return json.loads(fixed)
 
 
 def build_openrouter_client(api_key: str):
-    """Cliente OpenAI-compatible apuntando a OpenRouter.
-    Timeout de 15s: evita que Venice bloquee 30-60s en cada 429.
-    """
     from openai import AsyncOpenAI
     return AsyncOpenAI(
         base_url="https://openrouter.ai/api/v1",
