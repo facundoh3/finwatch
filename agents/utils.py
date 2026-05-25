@@ -10,25 +10,27 @@ from loguru import logger
 
 _models_cache: dict = {"models": [], "ts": 0.0}
 
-KNOWN_WORKING = "inclusionai/ling-2.6-flash:free"
-
 _FALLBACK_FREE_MODELS = [
-    "inclusionai/ling-2.6-flash:free",
+    "minimax/minimax-m1:extended",
+    "microsoft/mai-ds-r1:free",
+    "deepseek/deepseek-r1:free",
     "meta-llama/llama-3.3-70b-instruct:free",
     "google/gemini-flash-1.5:free",
-    "deepseek/deepseek-r1:free",
 ]
 
 # Venice aloja: llama-3.3, qwen3, dolphin — los pone al final porque aguantan la conexión 30-60s
+# Google AI Studio (Gemma): rate-limit frecuente → al final también
 _PREFER = [
-    "ling",
-    "gemma",
+    "minimax",
+    "mai-ds",
+    "deepseek-r1",
+    "mistral",
     "nemotron",
     "deepseek-v4",
-    "minimax",
     "llama-3.3",
     "qwen3",
     "dolphin",
+    "gemma",
 ]
 
 
@@ -42,12 +44,11 @@ async def race_models(
     per_model_timeout: float = 12.0,
 ) -> str | None:
     """
-    Corre los primeros 4 modelos EN PARALELO y retorna la primera respuesta válida.
+    Corre los primeros 6 modelos EN PARALELO y retorna la primera respuesta válida.
     Cancela el resto cuando uno gana. Total máximo = total_timeout segundos,
-    sin importar cuántos modelos Venice están colgados.
+    sin importar cuántos modelos Venice/Google estìn colgados.
     """
-    all_models = [KNOWN_WORKING] + [m for m in models if m != KNOWN_WORKING]
-    racing = all_models[:4]
+    racing = models[:6]
     logger.debug(f"race_models: compitiendo {racing}")
 
     async def _call(model: str) -> tuple[str, str]:

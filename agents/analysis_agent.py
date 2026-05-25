@@ -16,7 +16,7 @@ CLAUDE_MODEL = "claude-sonnet-4-6"
 
 async def run(context: AgentContext, settings: Settings) -> RecommendationSet:
     """
-    Corre hasta 4 modelos en paralelo (max 25s). Si todos fallan, intenta Claude.
+    Corre hasta 6 modelos en paralelo (max 25s). Si todos fallan, intenta Claude.
     """
     prompt = _build_prompt(context)
 
@@ -58,7 +58,7 @@ def _build_prompt(context: AgentContext) -> str:
 async def _run_claude(prompt: str, settings: Settings) -> RecommendationSet | None:
     try:
         import anthropic
-        client = anthropia.AsyncAnthropic(api_key=settings.anthropic_api_key)
+        client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
         message = await client.messages.create(
             model=CLAUDE_MODEL,
             max_tokens=1500,
