@@ -31,8 +31,6 @@ _PREFER = [
     "qwen3",
     "dolphin",
 ]
-    "phi",
-]
 
 
 async def get_free_models(api_key: str) -> list[str]:
