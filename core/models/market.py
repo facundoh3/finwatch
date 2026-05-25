@@ -34,6 +34,8 @@ class MarketSnapshot(BaseModel):
     volume: int = Field(default=0, ge=0)
     high_52w: float | None = Field(default=None)
     low_52w: float | None = Field(default=None)
+    sma20: float | None = Field(default=None)
+    sma50: float | None = Field(default=None)
     timestamp: datetime = Field(default_factory=datetime.utcnow)
 
     @field_validator("ticker", mode="before")
@@ -75,6 +77,12 @@ class MarketSnapshot(BaseModel):
         line = f"{self.ticker}: ${self.current_price:.2f} ({direction_symbol}{self.change_pct:.1f}%) | Vol: {vol_str}"
         if self.high_52w and self.low_52w:
             line += f" | 52w: ${self.low_52w:.2f} - ${self.high_52w:.2f}"
+        if self.sma20 is not None:
+            rel = "↑" if self.current_price > self.sma20 else "↓"
+            line += f" | SMA20:{rel}${self.sma20:.2f}"
+        if self.sma50 is not None:
+            rel = "↑" if self.current_price > self.sma50 else "↓"
+            line += f" | SMA50:{rel}${self.sma50:.2f}"
         return line
 
 

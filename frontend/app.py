@@ -256,15 +256,99 @@ def _render_precios(ctx):
     for s in sorted(ctx.market.snapshots, key=lambda x: abs(x.change_pct), reverse=True):
         arrow = "▲" if s.direction == PriceDirection.UP else ("▼" if s.direction == PriceDirection.DOWN else "▶")
         color = "🟢" if s.direction == PriceDirection.UP else ("🔴" if s.direction == PriceDirection.DOWN else "⚪")
+        sma_str = ""
+        if s.sma20:
+            rel = "↑" if s.current_price > s.sma20 else "↓"
+            sma_str = f"SMA20:{rel}${s.sma20:.0f}"
         rows.append({
             "": color,
             "Ticker": s.ticker,
             "Precio": f"${s.current_price:.2f}",
             "Cambio %": f"{arrow} {s.change_pct:+.2f}%",
+            "SMA20": sma_str,
             "Volumen": f"{s.volume/1_000_000:.1f}M" if s.volume >= 1_000_000 else str(s.volume),
         })
 
     st.dataframe(rows, use_container_width=True, hide_index=True)
+
+    st.divider()
+    tickers = [s.ticker for s in ctx.market.snapshots]
+    selected = st.selectbox("📊 Ver gráfico de:", tickers, key="chart_ticker")
+    if selected:
+        _render_price_chart(selected)
+
+
+def _render_price_chart(ticker: str) -> None:
+    cache_key = f"chart_{ticker}"
+    if cache_key not in st.session_state:
+        with st.spinner(f"Cargando historial de {ticker}..."):
+            from core.services.chart_service import get_price_history
+            st.session_state[cache_key] = get_price_history(ticker, days=60)
+
+    df = st.session_state.get(cache_key)
+    if df is None or df.empty:
+        st.warning(f"No hay datos históricos para {ticker}.")
+        return
+
+    try:
+        import plotly.graph_objects as go
+        from plotly.subplots import make_subplots
+
+        fig = make_subplots(
+            rows=2, cols=1, shared_xaxes=True,
+            vertical_spacing=0.04, row_heights=[0.75, 0.25],
+        )
+
+        fig.add_trace(go.Candlestick(
+            x=df.index, open=df["Open"], high=df["High"],
+            low=df["Low"], close=df["Close"],
+            name=ticker,
+            increasing_line_color="#26a69a",
+            decreasing_line_color="#ef5350",
+            increasing_fillcolor="#26a69a",
+            decreasing_fillcolor="#ef5350",
+        ), row=1, col=1)
+
+        if not df["SMA20"].isna().all():
+            fig.add_trace(go.Scatter(
+                x=df.index, y=df["SMA20"], name="SMA 20",
+                line=dict(color="#ff9800", width=1.5),
+            ), row=1, col=1)
+
+        if not df["SMA50"].isna().all():
+            fig.add_trace(go.Scatter(
+                x=df.index, y=df["SMA50"], name="SMA 50",
+                line=dict(color="#42a5f5", width=1.5),
+            ), row=1, col=1)
+
+        vol_colors = [
+            "#26a69a" if c >= o else "#ef5350"
+            for c, o in zip(df["Close"], df["Open"])
+        ]
+        fig.add_trace(go.Bar(
+            x=df.index, y=df["Volume"],
+            name="Volumen", marker_color=vol_colors, opacity=0.7,
+        ), row=2, col=1)
+
+        fig.update_layout(
+            title=f"{ticker} — últimos 60 días",
+            height=520,
+            xaxis_rangeslider_visible=False,
+            legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0),
+            paper_bgcolor="#0e1117",
+            plot_bgcolor="#0e1117",
+            font=dict(color="#fafafa"),
+            margin=dict(l=0, r=0, t=40, b=0),
+        )
+        fig.update_xaxes(gridcolor="#2a2a2a", showgrid=True)
+        fig.update_yaxes(gridcolor="#2a2a2a", showgrid=True)
+        fig.update_yaxes(title_text="Precio (USD)", row=1, col=1)
+        fig.update_yaxes(title_text="Volumen", row=2, col=1)
+
+        st.plotly_chart(fig, use_container_width=True)
+
+    except ImportError:
+        st.line_chart(df[["Close", "SMA20", "SMA50"]].dropna())
 
 
 def _render_noticias(ctx):

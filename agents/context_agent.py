@@ -44,7 +44,10 @@ async def run(
         return_exceptions=False,
     )
 
-    filtered_news = await _filter_news(news_items, all_tickers, market_overview, settings)
+    filtered_news, _ = await asyncio.gather(
+        _filter_news(news_items, all_tickers, market_overview, settings),
+        _enrich_with_technicals(market_overview, tickers_usa),
+    )
 
     news_collection = NewsCollection(
         items=filtered_news,
@@ -185,6 +188,24 @@ async def _filter_news(
     logger.warning("Contexto: modelos no disponibles — usando noticias tier A")
     tier_a = [n for n in news_items if n.source_tier == "A"]
     return tier_a[:20] or news_items[:20]
+
+
+async def _enrich_with_technicals(market: MarketOverview, tickers_usa: list[str]) -> None:
+    """Agrega SMA20/SMA50 a los snapshots de USA en paralelo con el filtrado de noticias."""
+    try:
+        from core.services.chart_service import get_histories, get_sma_values
+        histories = await asyncio.wait_for(
+            get_histories(tickers_usa, days=60),
+            timeout=12.0,
+        )
+        for snap in market.snapshots:
+            if snap.ticker in histories:
+                snap.sma20, snap.sma50 = get_sma_values(histories[snap.ticker])
+        logger.info(f"Técnicos: SMAs calculadas para {len(histories)} tickers")
+    except asyncio.TimeoutError:
+        logger.warning("Enriquecimiento técnico: timeout de 12s")
+    except Exception as e:
+        logger.warning(f"Enriquecimiento técnico fallido: {e}")
 
 
 async def _fetch_yfinance(tickers: list[str]) -> list[MarketSnapshot]:
