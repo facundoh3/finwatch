@@ -19,15 +19,18 @@ _FALLBACK_FREE_MODELS = [
     "deepseek/deepseek-chat:free",
 ]
 
-# Patrones de modelos preferidos para ordenar (más capaz primero)
+# Patrones de modelos preferidos — primero los que NO son Venice (menos rate limit)
+# Venice aloja: llama-3.3, qwen3-next, qwen3-coder, dolphin-mistral
 _PREFER = [
-    "llama-3.3",
-    "llama-3.1-70b",
+    "ling",          # inclusionai/ling-2.6-flash — funciona bien, no Venice
+    "gemma",         # Google AI Studio
+    "nemotron",      # Nvidia
+    "deepseek-v4",   # Crucible
+    "minimax",       # MiniMax
+    "llama-3.3",     # Venice — rate-limited seguido, ir al final
     "qwen3",
-    "qwen-2.5-72b",
-    "gemini",
-    "deepseek",
-    "mistral",
+    "dolphin",
+]
     "phi",
 ]
 
@@ -146,9 +149,12 @@ def extract_json(text: str) -> dict:
 
 
 def build_openrouter_client(api_key: str):
-    """Cliente OpenAI-compatible apuntando a OpenRouter."""
+    """Cliente OpenAI-compatible apuntando a OpenRouter.
+    Timeout de 15s: evita que Venice bloquee 30-60s en cada 429.
+    """
     from openai import AsyncOpenAI
     return AsyncOpenAI(
         base_url="https://openrouter.ai/api/v1",
         api_key=api_key,
+        timeout=15.0,
     )

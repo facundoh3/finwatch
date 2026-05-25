@@ -27,7 +27,7 @@ async def run(context: AgentContext, settings: Settings) -> RecommendationSet:
 
     if settings.openrouter_api_key:
         models = await get_free_models(settings.openrouter_api_key)
-        for model in models[:12]:  # máximo 12 intentos para no colgar la UI
+        for model in models[:8]:  # máximo 8 intentos — con timeout 15s = max 2 min
             result = await _run_openrouter(prompt, settings, model)
             if result and result.recommendations:
                 logger.info(f"Análisis listo con {model} ({len(result.recommendations)} recomendaciones)")
