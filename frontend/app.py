@@ -3,7 +3,9 @@ finwatch — Asistente personal de finanzas
 Ejecutar con: bash run.sh
 """
 import asyncio
+import json
 import sys
+from datetime import date, datetime, timezone, timedelta
 from pathlib import Path
 
 import streamlit as st
@@ -19,12 +21,26 @@ st.set_page_config(
 )
 
 _TICKERS_PATH = Path(__file__).parent.parent / "config" / "tickers.yaml"
+_PORTFOLIO_FILE = Path(__file__).parent.parent / "config" / "portfolio.json"
 
 
 def _load_tickers_config() -> dict:
     if _TICKERS_PATH.exists():
         return yaml.safe_load(_TICKERS_PATH.read_text())
     return {}
+
+
+def _load_portfolio() -> dict:
+    if _PORTFOLIO_FILE.exists():
+        try:
+            return json.loads(_PORTFOLIO_FILE.read_text())
+        except Exception:
+            return {}
+    return {}
+
+
+def _save_portfolio(portfolio: dict):
+    _PORTFOLIO_FILE.write_text(json.dumps(portfolio, indent=2, ensure_ascii=False))
 
 
 def _run_async(coro):
@@ -44,7 +60,6 @@ def _sidebar(cfg: dict) -> tuple[list[str], list[str], bool]:
     st.sidebar.caption("Asistente personal de finanzas")
     st.sidebar.divider()
 
-    # Categorías USA
     st.sidebar.subheader("🇺🇸 Índices y ETFs")
     all_indices = cfg.get("indices_usa", []) + cfg.get("commodities", []) + cfg.get("sectores_usa", [])
     tickers_etf = st.sidebar.multiselect(
@@ -74,7 +89,7 @@ def _sidebar(cfg: dict) -> tuple[list[str], list[str], bool]:
     st.sidebar.divider()
     _render_market_clock()
     st.sidebar.caption("Cache: 30 min · Noticias: 24hs")
-    st.sidebar.caption("IA: modelos gratuitos vía OpenRouter")
+    st.sidebar.caption("IA: Groq (gratis) · OpenRouter fallback")
 
     tickers_usa = tickers_etf + tickers_acciones
     return tickers_usa, tickers_byma, force_refresh
@@ -97,22 +112,15 @@ def _check_settings():
 
 
 def _render_market_clock():
-    """Muestra el horario del mercado NYSE en hora argentina (ART = UTC-3)."""
-    from datetime import datetime, timezone, timedelta
-
     ART = timezone(timedelta(hours=-3))
-    ET = timezone(timedelta(hours=-4))   # EDT (verano USA, mar-nov)
-    EST = timezone(timedelta(hours=-5))  # EST (invierno USA, nov-mar)
+    ET = timezone(timedelta(hours=-4))
+    EST = timezone(timedelta(hours=-5))
 
     now_utc = datetime.now(timezone.utc)
-    # Determinar si USA está en EDT o EST (simplificado: EDT mar-nov, EST nov-mar)
     month = now_utc.month
-    et_tz = EDT = ET if 3 <= month <= 11 else EST
-
-    now_art = now_utc.astimezone(ART)
+    et_tz = ET if 3 <= month <= 11 else EST
     now_et = now_utc.astimezone(et_tz)
 
-    # NYSE: lunes-viernes 9:30-16:00 ET
     open_et = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
     close_et = now_et.replace(hour=16, minute=0, second=0, microsecond=0)
     is_weekday = now_et.weekday() < 5
@@ -128,14 +136,11 @@ def _render_market_clock():
         mins_to = int((open_et - now_et).total_seconds() / 60)
         st.sidebar.info(f"🕐 NYSE abre {open_art} ART (en {mins_to}m)")
     else:
-        # Calcular próximo día hábil
-        days_ahead = 1
-        if now_et.weekday() == 4:   # viernes
-            days_ahead = 3
-        elif now_et.weekday() == 5:  # sábado
-            days_ahead = 2
-        st.sidebar.info(f"🔴 NYSE cerrado · reabre lunes {open_art} ART" if now_et.weekday() >= 4
-                        else f"🔴 NYSE cerrado · mañana {open_art} ART")
+        st.sidebar.info(
+            f"🔴 NYSE cerrado · reabre lunes {open_art} ART"
+            if now_et.weekday() >= 4
+            else f"🔴 NYSE cerrado · mañana {open_art} ART"
+        )
 
 
 def main():
@@ -145,7 +150,6 @@ def main():
     st.title("📈 finwatch")
     st.caption("Tu asistente personal de finanzas — mercados USA y Argentina")
 
-    # Mostrar advertencias de configuración
     issues = _check_settings()
     if issues:
         with st.expander("⚙️ Configuración incompleta", expanded=True):
@@ -158,7 +162,6 @@ def main():
         _show_welcome()
         return
 
-    # Analizar SOLO cuando el usuario hace clic — nunca en re-runs por cambio de tickers
     if force_refresh:
         with st.spinner("Analizando mercados... (~30 segundos)"):
             try:
@@ -182,11 +185,11 @@ def main():
 
     ctx, recs = st.session_state["analysis_result"]
 
-    # Resumen del mercado
+    _render_portfolio_banner(recs, ctx)
+
     if recs.market_summary:
         st.info(f"**Panorama del mercado hoy:** {recs.market_summary}")
 
-    # Métricas rápidas
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("✅ Comprar", len(recs.by_action("BUY")))
     col2.metric("⏳ Esperar", len(recs.by_action("WAIT")))
@@ -195,7 +198,7 @@ def main():
 
     st.divider()
 
-    tab1, tab2, tab3 = st.tabs(["💡 Recomendaciones", "📊 Precios", "📰 Noticias"])
+    tab1, tab2, tab3, tab4 = st.tabs(["💡 Recomendaciones", "📊 Precios", "📰 Noticias", "💼 Mi Portafolio"])
 
     with tab1:
         _render_recomendaciones(recs, ctx)
@@ -203,6 +206,8 @@ def main():
         _render_precios(ctx)
     with tab3:
         _render_noticias(ctx)
+    with tab4:
+        _render_portfolio_tab(recs, ctx)
 
 
 def _show_welcome():
@@ -211,29 +216,59 @@ def _show_welcome():
     - 📊 Monitorea índices, commodities, sectores y acciones en USA y Argentina
     - 📰 Analiza noticias financieras con IA y explica su impacto
     - 💡 Te dice qué **comprar, esperar o evitar** hoy
+    - 💼 Registrá tus compras y recibí alertas cuando tus posiciones estén en riesgo
     - 🔍 Cubre oro, petróleo, real estate, tecnología, energía y más
     """)
 
 
+def _render_portfolio_banner(recs, ctx):
+    portfolio = _load_portfolio()
+    if not portfolio or not recs.recommendations:
+        return
+
+    alerts = []
+    for ticker in portfolio:
+        rec = next((r for r in recs.recommendations if r.ticker == ticker), None)
+        snap = ctx.market.get(ticker)
+        if rec and rec.action.value == "AVOID":
+            alerts.append(f"🔴 **{ticker}**: el modelo recomienda EVITAR — revisá tu posición")
+        elif snap and snap.change_pct <= -3:
+            alerts.append(f"⬇️ **{ticker}**: bajó {snap.change_pct:.1f}% hoy — posible dip para sumar si el outlook es positivo")
+        elif snap and snap.sma20 and snap.current_price < snap.sma20:
+            alerts.append(f"🟡 **{ticker}**: precio cayó bajo SMA20 — tendencia débil, monitoreá")
+
+    if alerts:
+        with st.expander("⚠️ Alertas de tu portafolio", expanded=True):
+            for a in alerts:
+                st.markdown(a)
+
+
 def _render_recomendaciones(recs, ctx):
+    portfolio = _load_portfolio()
+
     if not recs.recommendations:
         st.warning("No hay recomendaciones. Verificá las API keys y volvé a analizar.")
         return
 
-    order = {"BUY": 0, "WAIT": 1, "AVOID": 2}
-    sorted_recs = sorted(recs.recommendations, key=lambda r: order.get(r.action.value, 3))
+    action_order = {"BUY": 0, "WAIT": 1, "AVOID": 2}
+    sorted_recs = sorted(
+        recs.recommendations,
+        key=lambda r: (0 if r.ticker in portfolio else 1, action_order.get(r.action.value, 3)),
+    )
 
     for rec in sorted_recs:
+        is_owned = rec.ticker in portfolio
         display = rec.to_display_dict()
         colors = {"BUY": "#1a4a1a", "WAIT": "#4a3a00", "AVOID": "#4a1010"}
         bg = colors.get(rec.action.value, "#222")
 
         snap = ctx.market.get(rec.ticker)
         price_info = f" · ${snap.current_price:.2f} ({snap.change_pct:+.1f}%)" if snap else ""
+        owned_icon = " ⭐" if is_owned else ""
 
         with st.expander(
-            f"{display['action_label']} **{rec.ticker}**{price_info} — {display['confidence_label']}",
-            expanded=(rec.action.value == "BUY"),
+            f"{display['action_label']} **{rec.ticker}**{price_info}{owned_icon} — {display['confidence_label']}",
+            expanded=(rec.action.value == "BUY" or is_owned),
         ):
             st.markdown(
                 f"<div style='background:{bg};padding:12px;border-radius:8px;margin-bottom:8px'>"
@@ -248,15 +283,148 @@ def _render_recomendaciones(recs, ctx):
                 for s in rec.sources[:3]:
                     st.markdown(f"- {s}")
 
+            st.divider()
+
+            if is_owned:
+                _render_position_summary(rec.ticker, portfolio[rec.ticker], snap)
+                if st.button(f"Quitar {rec.ticker} del portafolio", key=f"del_{rec.ticker}"):
+                    p = _load_portfolio()
+                    p.pop(rec.ticker, None)
+                    _save_portfolio(p)
+                    st.rerun()
+            elif rec.action.value in ("BUY", "WAIT"):
+                _render_buy_form(rec.ticker)
+
+
+def _render_position_summary(ticker: str, pos: dict, snap):
+    today = date.today()
+    date_bought = date.fromisoformat(pos["date_bought"])
+    days_elapsed = (today - date_bought).days
+    days_remaining = max(0, pos["days_to_hold"] - days_elapsed)
+    usd_amount = pos["ars_amount"] / pos["usd_rate"] if pos.get("usd_rate") else 0
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("💰 Invertido", f"${pos['ars_amount']:,.0f} ARS", f"≈ ${usd_amount:.0f} USD @ ${pos.get('usd_rate', 0):.0f}")
+    col2.metric("📅 Plazo", f"Día {days_elapsed} de {pos['days_to_hold']}", f"{days_remaining}d restantes")
+    if snap:
+        col3.metric("📈 Precio hoy", f"${snap.current_price:.2f}", f"{snap.change_pct:+.1f}%")
+
+    if days_remaining == 0:
+        st.warning("⏰ Se cumplió el plazo estimado — revisá si es momento de salir.")
+    elif snap and snap.change_pct <= -3:
+        st.info(f"⬇️ Bajó {snap.change_pct:.1f}% hoy — si el análisis sigue siendo positivo, podría ser un buen momento para sumar.")
+
+
+def _render_buy_form(ticker: str):
+    with st.expander(f"📥 Registrar compra de {ticker}"):
+        ars_amount = st.number_input(
+            "¿Cuánto invertiste? (ARS)",
+            min_value=0, step=1000, key=f"ars_{ticker}",
+        )
+        usd_rate = st.number_input(
+            "Tipo de cambio ARS/USD al momento de la compra",
+            min_value=1.0, value=1050.0, step=10.0, key=f"rate_{ticker}",
+        )
+        days_to_hold = st.slider(
+            "¿Cuántos días pensás mantenerla?",
+            1, 365, 30, key=f"days_{ticker}",
+        )
+        if ars_amount > 0 and usd_rate > 0:
+            st.caption(f"≈ ${ars_amount / usd_rate:.0f} USD invertidos")
+
+        if st.button(f"✅ Guardar compra de {ticker}", key=f"save_{ticker}"):
+            if ars_amount > 0:
+                p = _load_portfolio()
+                p[ticker] = {
+                    "ars_amount": float(ars_amount),
+                    "usd_rate": float(usd_rate),
+                    "days_to_hold": int(days_to_hold),
+                    "date_bought": date.today().isoformat(),
+                }
+                _save_portfolio(p)
+                st.success(f"✅ {ticker} guardada en tu portafolio")
+                st.rerun()
+            else:
+                st.error("Ingresá un monto mayor a 0.")
+
+
+def _render_portfolio_tab(recs, ctx):
+    portfolio = _load_portfolio()
+
+    if not portfolio:
+        st.info(
+            "No tenés posiciones registradas. "
+            "En la pestaña **💡 Recomendaciones**, cuando veas BUY o WAIT, "
+            "podés registrar tu compra con el formulario de cada acción."
+        )
+        return
+
+    st.subheader("💼 Mis posiciones")
+    today = date.today()
+
+    for ticker, pos in list(portfolio.items()):
+        snap = ctx.market.get(ticker) if ctx else None
+        rec = next((r for r in recs.recommendations if r.ticker == ticker), None) if recs else None
+
+        date_bought = date.fromisoformat(pos["date_bought"])
+        days_elapsed = (today - date_bought).days
+        days_remaining = max(0, pos["days_to_hold"] - days_elapsed)
+        usd_amount = pos["ars_amount"] / pos["usd_rate"] if pos.get("usd_rate") else 0
+
+        if rec and rec.action.value == "AVOID":
+            icon, alert_fn, alert_msg = "🔴", st.error, "El modelo recomienda EVITAR — considerá reducir o salir de la posición"
+        elif snap and snap.change_pct <= -3:
+            icon, alert_fn, alert_msg = "⬇️", st.info, f"Bajó {snap.change_pct:.1f}% hoy — posible dip para sumar si el outlook es positivo"
+        elif snap and snap.sma20 and snap.current_price < snap.sma20:
+            icon, alert_fn, alert_msg = "🟡", st.warning, "Precio bajo SMA20 — tendencia débil, prestá atención"
+        elif days_remaining == 0:
+            icon, alert_fn, alert_msg = "⏰", st.warning, "Se cumplió el plazo estimado — ¿es momento de salir?"
+        else:
+            icon, alert_fn, alert_msg = "🟢", None, None
+
+        with st.expander(
+            f"{icon} **{ticker}** — Día {days_elapsed} de {pos['days_to_hold']} · {days_remaining}d restantes",
+            expanded=True,
+        ):
+            if alert_fn:
+                alert_fn(alert_msg)
+
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("ARS invertidos", f"${pos['ars_amount']:,.0f}")
+            col2.metric("USD equiv.", f"${usd_amount:.0f}", f"@ ${pos.get('usd_rate', 0):.0f}")
+            col3.metric("Días restantes", days_remaining)
+            if snap:
+                col4.metric("Precio actual", f"${snap.current_price:.2f}", f"{snap.change_pct:+.1f}%")
+
+            if rec:
+                action_labels = {"BUY": "✅ Sumar más", "WAIT": "⏳ Mantener — todavía no es momento", "AVOID": "❌ Salir de la posición"}
+                st.info(f"**Recomendación actual:** {action_labels.get(rec.action.value, rec.action.value)}\n\n{rec.reasoning[:250]}...")
+
+            if st.button(f"Eliminar {ticker}", key=f"ptab_del_{ticker}"):
+                p = _load_portfolio()
+                p.pop(ticker, None)
+                _save_portfolio(p)
+                st.rerun()
+
+    st.divider()
+    st.caption("Las posiciones se guardan en `config/portfolio.json` y persisten entre sesiones.")
+
 
 def _render_precios(ctx):
+    portfolio = _load_portfolio()
+
     if not ctx.market.snapshots:
         st.info("No hay datos de precio disponibles.")
         return
 
     from core.models.market import PriceDirection
     rows = []
-    for s in sorted(ctx.market.snapshots, key=lambda x: abs(x.change_pct), reverse=True):
+    snapshots_sorted = sorted(
+        ctx.market.snapshots,
+        key=lambda x: (0 if x.ticker in portfolio else 1, -abs(x.change_pct)),
+    )
+    for s in snapshots_sorted:
+        is_owned = s.ticker in portfolio
         arrow = "▲" if s.direction == PriceDirection.UP else ("▼" if s.direction == PriceDirection.DOWN else "▶")
         color = "🟢" if s.direction == PriceDirection.UP else ("🔴" if s.direction == PriceDirection.DOWN else "⚪")
         sma_str = ""
@@ -264,7 +432,7 @@ def _render_precios(ctx):
             rel = "↑" if s.current_price > s.sma20 else "↓"
             sma_str = f"SMA20:{rel}${s.sma20:.0f}"
         rows.append({
-            "": color,
+            "": ("⭐" if is_owned else "") + color,
             "Ticker": s.ticker,
             "Precio": f"${s.current_price:.2f}",
             "Cambio %": f"{arrow} {s.change_pct:+.2f}%",
@@ -276,7 +444,9 @@ def _render_precios(ctx):
 
     st.divider()
     tickers = [s.ticker for s in ctx.market.snapshots]
-    selected = st.selectbox("📊 Ver gráfico de:", tickers, key="chart_ticker")
+    owned_in_list = [t for t in tickers if t in portfolio]
+    default_idx = tickers.index(owned_in_list[0]) if owned_in_list else 0
+    selected = st.selectbox("📊 Ver gráfico de:", tickers, index=default_idx, key="chart_ticker")
     if selected:
         _render_price_chart(selected)
 
@@ -356,6 +526,8 @@ def _render_price_chart(ticker: str) -> None:
 
 
 def _render_noticias(ctx):
+    portfolio = _load_portfolio()
+
     from frontend.components.news_card import render_news_card
     from core.models.news import SentimentLabel
 
@@ -373,6 +545,11 @@ def _render_noticias(ctx):
     elif tier_filter == "Tier B":
         items = [n for n in items if n.source_tier == "B"]
 
+    if portfolio:
+        items = sorted(items, key=lambda n: (
+            0 if any(t in (n.related_tickers or []) for t in portfolio) else 1
+        ))
+
     if not items:
         st.info("No hay noticias con los filtros seleccionados.")
         return
@@ -383,3 +560,4 @@ def _render_noticias(ctx):
 
 if __name__ == "__main__":
     main()
+    

@@ -143,7 +143,7 @@ async def _filter_news(
         return []
 
     raw_news_text = "\n".join(
-        f"- [{n.source_tier}] {n.headline} | {n.source} | {n.url}" for n in news_items[:50]
+        f"- [{n.source_tier}] {n.headline[:100]} | {n.source} | {n.url}" for n in news_items[:20]
     )
     prompt = (
         PROMPT_PATH.read_text()
