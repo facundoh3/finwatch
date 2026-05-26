@@ -195,3 +195,12 @@ def build_openrouter_client(api_key: str):
         api_key=api_key,
         timeout=15.0,
     )
+
+
+def build_groq_client(api_key: str):
+    from openai import AsyncOpenAI
+    return AsyncOpenAI(
+        base_url="https://api.groq.com/openai/v1",
+        api_key=api_key,
+        timeout=30.0,
+    )

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from agents.utils import build_openrouter_client, extract_json, get_free_models, race_models
+from agents.utils import build_groq_client, build_openrouter_client, extract_json, get_free_models, race_models
 from config.settings import Settings
 from core.models.market import MarketOverview, MarketSnapshot
 from core.models.news import NewsCollection, NewsItem
@@ -137,12 +137,10 @@ async def _filter_news(
     settings: Settings,
 ) -> list[NewsItem]:
     """
-    Corre 4 modelos en paralelo (max 15s total).
-    Si ninguno responde, usa noticias tier A directamente sin LLM.
+    Groq primero (gratis, rápido). Fallback: OpenRouter race. Si nada, tier A directo.
     """
-    if not settings.openrouter_api_key or not news_items:
-        tier_a = [n for n in news_items if n.source_tier == "A"]
-        return tier_a[:20] or news_items[:20]
+    if not news_items:
+        return []
 
     raw_news_text = "\n".join(
         f"- [{n.source_tier}] {n.headline} | {n.source} | {n.url}" for n in news_items[:50]
@@ -154,16 +152,34 @@ async def _filter_news(
         .replace("{market_data}", market.to_context_block())
     )
 
-    client = build_openrouter_client(settings.openrouter_api_key)
-    models = await get_free_models(settings.openrouter_api_key)
+    content: str | None = None
 
-    content = await race_models(
-        client,
-        messages=[{"role": "user", "content": prompt}],
-        models=models,
-        max_tokens=4000,
-        total_timeout=15.0,
-    )
+    if settings.groq_api_key:
+        try:
+            client = build_groq_client(settings.groq_api_key)
+            response = await asyncio.wait_for(
+                client.chat.completions.create(
+                    model="llama-3.1-8b-instant",
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=4000,
+                ),
+                timeout=15.0,
+            )
+            content = response.choices[0].message.content
+            logger.info("Contexto: filtrado con Groq llama-3.1-8b-instant")
+        except Exception as e:
+            logger.warning(f"Groq contexto error: {e}")
+
+    if not content and settings.openrouter_api_key:
+        client = build_openrouter_client(settings.openrouter_api_key)
+        models = await get_free_models(settings.openrouter_api_key)
+        content = await race_models(
+            client,
+            messages=[{"role": "user", "content": prompt}],
+            models=models,
+            max_tokens=4000,
+            total_timeout=15.0,
+        )
 
     if content:
         try:
@@ -185,7 +201,7 @@ async def _filter_news(
         except Exception as e:
             logger.warning(f"Error parseando respuesta de contexto: {e}")
 
-    logger.warning("Contexto: modelos no disponibles — usando noticias tier A")
+    logger.warning("Contexto: sin IA disponible — usando noticias tier A")
     tier_a = [n for n in news_items if n.source_tier == "A"]
     return tier_a[:20] or news_items[:20]
 

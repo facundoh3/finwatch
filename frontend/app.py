@@ -84,8 +84,11 @@ def _check_settings():
     from config.settings import get_settings
     s = get_settings()
     issues = []
-    if not s.openrouter_api_key:
-        issues.append("❌ **OPENROUTER_API_KEY** no configurada — requerida para el análisis de IA")
+    has_ai = s.groq_api_key or s.anthropic_api_key or s.openrouter_api_key
+    if not s.groq_api_key:
+        issues.append("⚠️ **GROQ_API_KEY** no configurada — recomendada (gratis en console.groq.com, muy rápida)")
+    if not has_ai:
+        issues.append("❌ Se necesita al menos **GROQ_API_KEY** o **OPENROUTER_API_KEY** para análisis de IA")
     if not s.finnhub_api_key:
         issues.append("⚠️ **FINNHUB_API_KEY** no configurada — datos de mercado limitados")
     if not s.marketaux_api_key:
@@ -348,7 +351,8 @@ def _render_price_chart(ticker: str) -> None:
         st.plotly_chart(fig, use_container_width=True)
 
     except ImportError:
-        st.line_chart(df[["Close", "SMA20", "SMA50"]].dropna())
+        st.warning("Instalá plotly para ver el gráfico de velas: `pip install plotly`")
+        st.line_chart(df[["Close", "SMA20"]].dropna(subset=["Close"]))
 
 
 def _render_noticias(ctx):

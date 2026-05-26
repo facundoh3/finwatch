@@ -6,19 +6,30 @@ from pathlib import Path
 
 from loguru import logger
 
-from agents.utils import build_openrouter_client, extract_json, get_free_models, race_models
+from agents.utils import build_groq_client, build_openrouter_client, extract_json, get_free_models, race_models
 from config.settings import Settings
 from core.models.recommendation import Action, AgentContext, Recommendation, RecommendationSet
 
 PROMPT_PATH = Path(__file__).parent.parent / "config" / "prompts" / "analysis_agent.txt"
 CLAUDE_MODEL = "claude-sonnet-4-6"
+GROQ_MODEL = "llama-3.3-70b-versatile"
 
 
 async def run(context: AgentContext, settings: Settings) -> RecommendationSet:
     """
-    Corre hasta 6 modelos en paralelo (max 25s). Si todos fallan, intenta Claude.
+    Orden: Groq (gratis, rápido) → Claude (pago) → OpenRouter (modelos gratuitos, lento).
     """
     prompt = _build_prompt(context)
+
+    if settings.groq_api_key:
+        result = await _run_groq(prompt, settings)
+        if result and result.recommendations:
+            return result
+
+    if settings.anthropic_api_key:
+        result = await _run_claude(prompt, settings)
+        if result and result.recommendations:
+            return result
 
     if settings.openrouter_api_key:
         client = build_openrouter_client(settings.openrouter_api_key)
@@ -37,15 +48,10 @@ async def run(context: AgentContext, settings: Settings) -> RecommendationSet:
                 logger.info(f"Análisis listo ({len(result.recommendations)} recomendaciones)")
                 return result
 
-    if settings.anthropic_api_key:
-        result = await _run_claude(prompt, settings)
-        if result and result.recommendations:
-            return result
-
     return RecommendationSet(
         market_summary=(
-            "Los modelos de IA no respondieron a tiempo. "
-            "Esperá 2-3 minutos y volvé a analizar."
+            "Los modelos de IA no respondieron. "
+            "Agregá ANTHROPIC_API_KEY en .env para análisis confiable."
         )
     )
 
@@ -53,6 +59,23 @@ async def run(context: AgentContext, settings: Settings) -> RecommendationSet:
 def _build_prompt(context: AgentContext) -> str:
     template = PROMPT_PATH.read_text()
     return template.replace("{context_block}", context.to_claude_prompt_block())
+
+
+async def _run_groq(prompt: str, settings: Settings) -> RecommendationSet | None:
+    try:
+        client = build_groq_client(settings.groq_api_key)
+        response = await client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=2000,
+            temperature=0.3,
+        )
+        text = response.choices[0].message.content
+        logger.info(f"Groq ({GROQ_MODEL}): {response.usage.completion_tokens} tokens")
+        return _parse(text)
+    except Exception as e:
+        logger.warning(f"Groq error: {e}")
+        return None
 
 
 async def _run_claude(prompt: str, settings: Settings) -> RecommendationSet | None:
