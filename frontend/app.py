@@ -22,6 +22,8 @@ st.set_page_config(
 
 _TICKERS_PATH = Path(__file__).parent.parent / "config" / "tickers.yaml"
 _PORTFOLIO_FILE = Path(__file__).parent.parent / "config" / "portfolio.json"
+_ANALYSIS_FILE = Path(__file__).parent.parent / "config" / "last_analysis.json"
+_ANALYSIS_TTL_HOURS = 8
 
 
 def _load_tickers_config() -> dict:
@@ -41,6 +43,31 @@ def _load_portfolio() -> dict:
 
 def _save_portfolio(portfolio: dict):
     _PORTFOLIO_FILE.write_text(json.dumps(portfolio, indent=2, ensure_ascii=False))
+
+
+def _load_last_analysis():
+    if not _ANALYSIS_FILE.exists():
+        return None
+    try:
+        data = json.loads(_ANALYSIS_FILE.read_text())
+        saved_at = datetime.fromisoformat(data["saved_at"])
+        if (datetime.now() - saved_at).total_seconds() > _ANALYSIS_TTL_HOURS * 3600:
+            return None
+        from core.models.recommendation import AgentContext, RecommendationSet
+        return AgentContext.model_validate(data["ctx"]), RecommendationSet.model_validate(data["recs"]), saved_at
+    except Exception:
+        return None
+
+
+def _save_last_analysis(ctx, recs):
+    try:
+        _ANALYSIS_FILE.write_text(json.dumps({
+            "saved_at": datetime.now().isoformat(),
+            "ctx": ctx.model_dump(mode="json"),
+            "recs": recs.model_dump(mode="json"),
+        }, ensure_ascii=False, default=str))
+    except Exception:
+        pass
 
 
 def _run_async(coro):
@@ -147,6 +174,13 @@ def main():
     cfg = _load_tickers_config()
     tickers_usa, tickers_byma, force_refresh = _sidebar(cfg)
 
+    if "analysis_result" not in st.session_state:
+        loaded = _load_last_analysis()
+        if loaded:
+            ctx_cached, recs_cached, saved_at = loaded
+            st.session_state["analysis_result"] = (ctx_cached, recs_cached)
+            st.session_state["analysis_age"] = saved_at
+
     st.title("📈 finwatch")
     st.caption("Tu asistente personal de finanzas — mercados USA y Argentina")
 
@@ -174,6 +208,8 @@ def main():
                     )
                 )
                 st.session_state["analysis_result"] = (ctx, recs)
+                st.session_state["analysis_age"] = datetime.now()
+                _save_last_analysis(ctx, recs)
             except Exception as e:
                 st.error(f"Error al ejecutar el análisis: {e}")
                 return
@@ -184,6 +220,13 @@ def main():
         return
 
     ctx, recs = st.session_state["analysis_result"]
+
+    if "analysis_age" in st.session_state:
+        age = datetime.now() - st.session_state["analysis_age"]
+        h = int(age.total_seconds()) // 3600
+        m = (int(age.total_seconds()) % 3600) // 60
+        age_str = f"{h}h {m}m" if h > 0 else f"{m}m"
+        st.caption(f"📊 Análisis de hace {age_str} · Hacé clic en 🔄 para actualizar (se auto-renueva a las {_ANALYSIS_TTL_HOURS}hs)")
 
     _render_portfolio_banner(recs, ctx)
 
@@ -203,7 +246,7 @@ def main():
     with tab1:
         _render_recomendaciones(recs, ctx)
     with tab2:
-        _render_precios(ctx)
+        _render_precios(ctx, recs)
     with tab3:
         _render_noticias(ctx)
     with tab4:
@@ -410,7 +453,7 @@ def _render_portfolio_tab(recs, ctx):
     st.caption("Las posiciones se guardan en `config/portfolio.json` y persisten entre sesiones.")
 
 
-def _render_precios(ctx):
+def _render_precios(ctx, recs=None):
     portfolio = _load_portfolio()
 
     if not ctx.market.snapshots:
@@ -446,17 +489,24 @@ def _render_precios(ctx):
     tickers = [s.ticker for s in ctx.market.snapshots]
     owned_in_list = [t for t in tickers if t in portfolio]
     default_idx = tickers.index(owned_in_list[0]) if owned_in_list else 0
-    selected = st.selectbox("📊 Ver gráfico de:", tickers, index=default_idx, key="chart_ticker")
+    col_sel, col_per = st.columns([3, 1])
+    with col_sel:
+        selected = st.selectbox("📊 Ver gráfico de:", tickers, index=default_idx, key="chart_ticker")
+    with col_per:
+        period_map = {"1 Sem": 7, "1 Mes": 30, "60 Días": 60}
+        period_label = st.radio("Período", list(period_map.keys()), index=2, key="chart_period")
+        days = period_map[period_label]
     if selected:
-        _render_price_chart(selected)
+        rec = next((r for r in recs.recommendations if r.ticker == selected), None) if recs else None
+        _render_price_chart(selected, days=days, rec=rec)
 
 
-def _render_price_chart(ticker: str) -> None:
-    cache_key = f"chart_{ticker}"
+def _render_price_chart(ticker: str, days: int = 60, rec=None) -> None:
+    cache_key = f"chart_{ticker}_{days}"
     if cache_key not in st.session_state:
         with st.spinner(f"Cargando historial de {ticker}..."):
             from core.services.chart_service import get_price_history
-            st.session_state[cache_key] = get_price_history(ticker, days=60)
+            st.session_state[cache_key] = get_price_history(ticker, days=days)
 
     df = st.session_state.get(cache_key)
     if df is None or df.empty:
@@ -504,7 +554,7 @@ def _render_price_chart(ticker: str) -> None:
         ), row=2, col=1)
 
         fig.update_layout(
-            title=f"{ticker} — últimos 60 días",
+            title=f"{ticker} — últimos {days} días",
             height=520,
             xaxis_rangeslider_visible=False,
             legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0),
@@ -517,6 +567,28 @@ def _render_price_chart(ticker: str) -> None:
         fig.update_yaxes(gridcolor="#2a2a2a", showgrid=True)
         fig.update_yaxes(title_text="Precio (USD)", row=1, col=1)
         fig.update_yaxes(title_text="Volumen", row=2, col=1)
+
+        if rec:
+            icons = {"BUY": "✅", "WAIT": "⏳", "AVOID": "❌"}
+            bg_colors = {"BUY": "#1a4a1a", "WAIT": "#4a3a00", "AVOID": "#4a1010"}
+            action_val = rec.action.value
+            label = f"{icons.get(action_val, '')} {action_val}"
+            if rec.wait_days:
+                label += f" — esperar {rec.wait_days}d"
+            if rec.reasoning:
+                label += f"<br><i style='font-size:11px'>{rec.reasoning[:80]}…</i>"
+            fig.add_annotation(
+                x=0.99, y=0.97,
+                xref="paper", yref="paper",
+                text=f"<b>{label}</b>",
+                showarrow=False,
+                font=dict(size=12, color="white"),
+                bgcolor=bg_colors.get(action_val, "#222"),
+                bordercolor="rgba(255,255,255,0.4)",
+                borderwidth=1,
+                xanchor="right", yanchor="top",
+                align="right",
+            )
 
         st.plotly_chart(fig, use_container_width=True)
 
