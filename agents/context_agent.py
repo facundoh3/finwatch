@@ -15,10 +15,14 @@ from core.models.recommendation import AgentContext
 from core.services.byma_client import BYMAClient
 from core.services.cache_service import CacheService
 from core.services.finnhub_client import FinnhubClient
+from core.services.market_calendar import get_last_close_date
 from core.services.marketaux_client import MarketauxClient
 from core.services.rss_client import fetch_all_tier_a_news
 
 PROMPT_PATH = Path(__file__).parent.parent / "config" / "prompts" / "context_agent.txt"
+
+
+_NEWS_CACHE_TTL = 1440  # minutos (24hs) — se invalida solo cuando cambia la fecha de cierre
 
 
 async def run(
@@ -27,27 +31,33 @@ async def run(
     settings: Settings,
     cache: CacheService | None = None,
 ) -> AgentContext:
-    all_tickers = list(set(tickers_usa + tickers_byma))
-    cache_key = f"context_{'_'.join(sorted(all_tickers))}"
+    all_tickers = sorted(set(tickers_usa + tickers_byma))
+    close_date = get_last_close_date()
+    news_key = f"news_{close_date}_{'_'.join(all_tickers)}"
 
+    logger.info(f"Fetcheando datos para: {all_tickers} | cierre: {close_date}")
+
+    # Precios: siempre frescos
+    market_overview = await _fetch_market_data(tickers_usa, tickers_byma, settings)
+
+    # Noticias: cacheadas por día de cierre — estables durante toda la sesión
+    filtered_news: list[NewsItem] | None = None
     if cache:
-        cached = cache.get(cache_key)
-        if cached:
-            logger.info("AgentContext desde cache")
-            return AgentContext.model_validate(cached)
+        cached_news = cache.get(news_key, override_ttl_minutes=_NEWS_CACHE_TTL)
+        if cached_news:
+            filtered_news = [NewsItem.model_validate(n) for n in cached_news]
+            logger.info(f"Noticias: cache del cierre {close_date} ({len(filtered_news)} items)")
 
-    logger.info(f"Fetcheando datos para: {all_tickers}")
-
-    market_overview, news_items = await asyncio.gather(
-        _fetch_market_data(tickers_usa, tickers_byma, settings),
-        _fetch_all_news(tickers_usa, settings),
-        return_exceptions=False,
-    )
-
-    filtered_news, _ = await asyncio.gather(
-        _filter_news(news_items, all_tickers, market_overview, settings),
-        _enrich_with_technicals(market_overview, tickers_usa),
-    )
+    if filtered_news is None:
+        news_items = await _fetch_all_news(tickers_usa, settings)
+        filtered_news, _ = await asyncio.gather(
+            _filter_news(news_items, all_tickers, market_overview, settings),
+            _enrich_with_technicals(market_overview, tickers_usa),
+        )
+        if cache:
+            cache.set(news_key, [n.model_dump(mode="json") for n in filtered_news])
+    else:
+        await _enrich_with_technicals(market_overview, tickers_usa)
 
     news_collection = NewsCollection(
         items=filtered_news,
@@ -55,16 +65,11 @@ async def run(
         hours_back=settings.news_hours_back,
     )
 
-    context = AgentContext(
+    return AgentContext(
         news=news_collection,
         market=market_overview,
         query_tickers=all_tickers,
     )
-
-    if cache:
-        cache.set(cache_key, context.model_dump(mode="json"))
-
-    return context
 
 
 async def _fetch_market_data(

@@ -115,7 +115,7 @@ def _sidebar(cfg: dict) -> tuple[list[str], list[str], bool]:
     force_refresh = st.sidebar.button("🔄 Analizar ahora", use_container_width=True)
     st.sidebar.divider()
     _render_market_clock()
-    st.sidebar.caption("Cache: 30 min · Noticias: 24hs")
+    _render_news_cache_status()
     st.sidebar.caption("IA: Groq (gratis) · OpenRouter fallback")
 
     tickers_usa = tickers_etf + tickers_acciones
@@ -136,6 +136,20 @@ def _check_settings():
     if not s.marketaux_api_key:
         issues.append("⚠️ **MARKETAUX_API_KEY** no configurada — menos fuentes de noticias")
     return issues
+
+
+def _render_news_cache_status():
+    try:
+        from core.services.market_calendar import get_last_close_date, minutes_until_next_close
+        close_date = get_last_close_date()
+        mins = minutes_until_next_close()
+        if mins is not None:
+            h, m = divmod(mins, 60)
+            st.sidebar.caption(f"📰 Noticias: cierre {close_date} · actualiza en {h}h {m:02d}m")
+        else:
+            st.sidebar.caption(f"📰 Noticias: cierre {close_date}")
+    except Exception:
+        pass
 
 
 def _render_market_clock():
@@ -501,12 +515,30 @@ def _render_precios(ctx, recs=None):
         _render_price_chart(selected, days=days, rec=rec)
 
 
+def _render_rec_banner(rec) -> None:
+    icons = {"BUY": "✅", "WAIT": "⏳", "AVOID": "❌"}
+    bg = {"BUY": "#1a4a1a", "WAIT": "#4a3a00", "AVOID": "#4a1010"}
+    action = rec.action.value
+    label = f"{icons.get(action, '')} {action}"
+    if rec.wait_days:
+        label += f" — esperar {rec.wait_days}d"
+    reasoning = (rec.reasoning[:160] + "…") if rec.reasoning and len(rec.reasoning) > 160 else rec.reasoning or ""
+    st.markdown(
+        f"<div style='background:{bg.get(action,'#333')};padding:8px 14px;border-radius:6px;margin-bottom:4px'>"
+        f"<b>{label}</b>"
+        + (f"<br><small style='opacity:0.85'>{reasoning}</small>" if reasoning else "")
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+
+
 def _render_price_chart(ticker: str, days: int = 60, rec=None) -> None:
-    cache_key = f"chart_{ticker}_{days}"
+    # Siempre descarga 60 días; el período solo hace zoom (TradingView style)
+    cache_key = f"chart_{ticker}"
     if cache_key not in st.session_state:
         with st.spinner(f"Cargando historial de {ticker}..."):
             from core.services.chart_service import get_price_history
-            st.session_state[cache_key] = get_price_history(ticker, days=days)
+            st.session_state[cache_key] = get_price_history(ticker, days=60)
 
     df = st.session_state.get(cache_key)
     if df is None or df.empty:
@@ -568,27 +600,13 @@ def _render_price_chart(ticker: str, days: int = 60, rec=None) -> None:
         fig.update_yaxes(title_text="Precio (USD)", row=1, col=1)
         fig.update_yaxes(title_text="Volumen", row=2, col=1)
 
+        # Zoom por período sobre los 60 días descargados
+        last_date = df.index[-1]
+        start_date = last_date - timedelta(days=days)
+        fig.update_xaxes(range=[str(start_date.date()), str((last_date + timedelta(days=1)).date())])
+
         if rec:
-            icons = {"BUY": "✅", "WAIT": "⏳", "AVOID": "❌"}
-            bg_colors = {"BUY": "#1a4a1a", "WAIT": "#4a3a00", "AVOID": "#4a1010"}
-            action_val = rec.action.value
-            label = f"{icons.get(action_val, '')} {action_val}"
-            if rec.wait_days:
-                label += f" — esperar {rec.wait_days}d"
-            if rec.reasoning:
-                label += f"<br><i style='font-size:11px'>{rec.reasoning[:80]}…</i>"
-            fig.add_annotation(
-                x=0.99, y=0.97,
-                xref="paper", yref="paper",
-                text=f"<b>{label}</b>",
-                showarrow=False,
-                font=dict(size=12, color="white"),
-                bgcolor=bg_colors.get(action_val, "#222"),
-                bordercolor="rgba(255,255,255,0.4)",
-                borderwidth=1,
-                xanchor="right", yanchor="top",
-                align="right",
-            )
+            _render_rec_banner(rec)
 
         st.plotly_chart(fig, use_container_width=True)
 

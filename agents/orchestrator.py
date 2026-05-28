@@ -55,8 +55,7 @@ async def analyze(
     cache = _get_cache(settings)
 
     if force_refresh:
-        logger.info("Forzando refresh del cache")
-        cache.clear_all()
+        logger.info("Re-analizando (noticias del día preservadas — se actualizan al cierre NYSE)")
 
     if tickers_usa is None or tickers_byma is None:
         default_usa, default_byma = _load_tickers()
