@@ -16,13 +16,19 @@ TIER_A_FEEDS = {
     "wsj": "https://feeds.a.dj.com/rss/RSSMarketsMain.xml",
     "cnbc": "https://www.cnbc.com/id/100003114/device/rss/rss.html",
     "marketwatch": "https://feeds.marketwatch.com/marketwatch/marketpulse/",
-    "barrons": "https://www.barrons.com/xml/rss/3_7_8.xml",
+    "reuters_business": "https://feeds.reuters.com/reuters/businessNews",
+    "reuters_finance": "https://feeds.reuters.com/reuters/financialNews",
+    "cnbc_investing": "https://www.cnbc.com/id/15839069/device/rss/rss.html",
 }
 
 TIER_B_FEEDS = {
     "yahoo_finance": "https://finance.yahoo.com/rss/topfinstories",
+    "yahoo_top": "https://finance.yahoo.com/rss/2.0/headline?s=^GSPC&region=US&lang=en-US",
     "seeking_alpha": "https://seekingalpha.com/feed.xml",
     "the_street": "https://www.thestreet.com/.rss/full",
+    "barrons": "https://www.barrons.com/xml/rss/3_7_8.xml",
+    "benzinga": "https://www.benzinga.com/feed",
+    "investing_com": "https://www.investing.com/rss/news_25.rss",
 }
 
 
@@ -42,7 +48,7 @@ def _parse_rss_xml(xml: str, source_name: str, tier: str = "A") -> list[NewsItem
     import re
     items = []
     entries = re.findall(r"<item>(.*?)</item>", xml, re.DOTALL)
-    for entry in entries[:15]:
+    for entry in entries[:20]:
         try:
             title = _extract_tag(entry, "title")
             link = _extract_tag(entry, "link") or _extract_tag(entry, "guid")
