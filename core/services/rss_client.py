@@ -1,6 +1,7 @@
 """
-Cliente RSS para fuentes financieras tier A (Reuters, Bloomberg, WSJ).
-Estas fuentes son las más confiables para noticias financieras.
+Cliente RSS para fuentes financieras.
+Tier A: WSJ, CNBC, MarketWatch, Barron's (editorialmente verificadas)
+Tier B: Yahoo Finance, Seeking Alpha (buenas pero menos curadas)
 No requieren API key.
 """
 from datetime import datetime, timezone
@@ -11,32 +12,33 @@ from loguru import logger
 
 from core.models.news import NewsItem
 
-# Feeds RSS de fuentes tier A — editorialmente verificadas
 TIER_A_FEEDS = {
-    "reuters": "https://feeds.reuters.com/reuters/businessNews",
     "wsj": "https://feeds.a.dj.com/rss/RSSMarketsMain.xml",
+    "cnbc": "https://www.cnbc.com/id/100003114/device/rss/rss.html",
+    "marketwatch": "https://feeds.marketwatch.com/marketwatch/marketpulse/",
+    "barrons": "https://www.barrons.com/xml/rss/3_7_8.xml",
 }
 
-# Bloomberg requiere suscripción para RSS completo; se omite por defecto
-# "bloomberg": "https://feeds.bloomberg.com/markets/news.rss"
+TIER_B_FEEDS = {
+    "yahoo_finance": "https://finance.yahoo.com/rss/topfinstories",
+    "seeking_alpha": "https://seekingalpha.com/feed.xml",
+    "the_street": "https://www.thestreet.com/.rss/full",
+}
 
 
-async def fetch_rss_feed(url: str, source_name: str) -> list[NewsItem]:
-    """Descarga y parsea un feed RSS, retorna NewsItems con source_tier='A'."""
+async def fetch_rss_feed(url: str, source_name: str, tier: str = "A") -> list[NewsItem]:
     try:
         async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-            resp = await client.get(url, headers={"User-Agent": "finwatch/0.1"})
+            resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0 finwatch/0.1"})
             resp.raise_for_status()
             xml = resp.text
     except Exception as e:
         logger.warning(f"Error descargando RSS {source_name}: {e}")
         return []
+    return _parse_rss_xml(xml, source_name, tier)
 
-    return _parse_rss_xml(xml, source_name)
 
-
-def _parse_rss_xml(xml: str, source_name: str) -> list[NewsItem]:
-    """Parser RSS minimalista sin dependencias externas."""
+def _parse_rss_xml(xml: str, source_name: str, tier: str = "A") -> list[NewsItem]:
     import re
     items = []
     entries = re.findall(r"<item>(.*?)</item>", xml, re.DOTALL)
@@ -48,15 +50,11 @@ def _parse_rss_xml(xml: str, source_name: str) -> list[NewsItem]:
             description = _extract_tag(entry, "description")
             if not title or not link:
                 continue
-            published_at = _parse_date(pub_date)
             items.append(NewsItem(
-                headline=title,
-                summary=description or "",
-                source=source_name,
-                url=link,
-                published_at=published_at,
-                source_tier="A",
-                corroborated_by=1,
+                headline=title, summary=description or "",
+                source=source_name, url=link,
+                published_at=_parse_date(pub_date),
+                source_tier=tier, corroborated_by=1,
             ))
         except Exception as e:
             logger.debug(f"RSS item descartado ({source_name}): {e}")
@@ -66,9 +64,7 @@ def _parse_rss_xml(xml: str, source_name: str) -> list[NewsItem]:
 def _extract_tag(text: str, tag: str) -> str:
     import re
     match = re.search(rf"<{tag}[^>]*>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</{tag}>", text, re.DOTALL)
-    if match:
-        return match.group(1).strip()
-    return ""
+    return match.group(1).strip() if match else ""
 
 
 def _parse_date(date_str: str) -> datetime:
@@ -81,9 +77,11 @@ def _parse_date(date_str: str) -> datetime:
 
 
 async def fetch_all_tier_a_news() -> list[NewsItem]:
-    """Descarga noticias de todas las fuentes tier A configuradas."""
     import asyncio
-    tasks = [fetch_rss_feed(url, name) for name, url in TIER_A_FEEDS.items()]
+    tasks = (
+        [fetch_rss_feed(url, name, "A") for name, url in TIER_A_FEEDS.items()] +
+        [fetch_rss_feed(url, name, "B") for name, url in TIER_B_FEEDS.items()]
+    )
     results = await asyncio.gather(*tasks, return_exceptions=True)
     items = []
     for result in results:

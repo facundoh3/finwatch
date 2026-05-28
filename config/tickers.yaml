@@ -1,23 +1,45 @@
-tickers_usa:
+indices_usa:
+  - SPY       # S&P 500 — referencia macro global
+  - QQQ       # Nasdaq 100 — tecnología
+  - DIA       # Dow Jones Industrial
+
+commodities:
+  - GLD       # Oro (SPDR Gold)
+  - SLV       # Plata
+  - USO       # Petróleo crudo
+  - UNG       # Gas natural
+
+sectores_usa:
+  - VNQ       # Real estate / inmobiliario
+  - XLE       # Energía
+  - XLF       # Finanzas / bancos
+  - XLB       # Materiales
+  - XLV       # Salud
+  - XLI       # Industrial
+
+acciones_usa:
   - AAPL
   - NVDA
   - TSLA
   - MSFT
-  - SPY       # ETF S&P500 — referencia macro
+  - AMZN
 
 tickers_arg_adr:
   - YPF       # YPF S.A. ADR en NYSE
-  - GGAL      # Grupo Financiero Galicia ADR en NYSE
-  - BMA       # Banco Macro ADR en NYSE
-  - BBAR      # BBVA Argentina ADR en NYSE
+  - GGAL      # Grupo Financiero Galicia
+  - BMA       # Banco Macro
+  - BBAR      # BBVA Argentina
+  - LOMA      # Loma Negra
 
 tickers_byma:
   - YPFD      # YPF panel BYMA
   - GGAL      # Galicia panel BYMA
-  - TXAR      # Ternium Argentina BYMA
+  - TXAR      # Ternium Argentina
   - BBAR      # BBVA Argentina BYMA
-  - PAMP      # Pampa Energía BYMA
+  - PAMP      # Pampa Energía
+  - ALUA      # Aluar (aluminio)
 
 indices:
   - "^MERV"   # S&P Merval (Argentina)
   - "^GSPC"   # S&P 500 (USA)
+  - "^VIX"    # Índice de volatilidad (miedo del mercado)

@@ -1,18 +1,13 @@
 """
-Context Agent — usa Qwen3.6 (gratis via OpenRouter) para filtrar y resumir
-noticias y datos de mercado antes de enviárselos a Claude.
-
-Estrategia de tokens:
-- Qwen procesa el volumen (1M contexto, gratis)
-- Solo pasa < 4000 tokens comprimidos al analysis_agent
+Context Agent — filtra y resume noticias antes de enviárselas al analysis_agent.
+Usa race_models: corre 4 modelos en paralelo, toma el primero que responda (max 15s).
 """
 import asyncio
-import json
 from pathlib import Path
 
 from loguru import logger
-from openai import AsyncOpenAI
 
+from agents.utils import build_groq_client, build_openrouter_client, extract_json, get_free_models, race_models
 from config.settings import Settings
 from core.models.market import MarketOverview, MarketSnapshot
 from core.models.news import NewsCollection, NewsItem
@@ -24,7 +19,6 @@ from core.services.marketaux_client import MarketauxClient
 from core.services.rss_client import fetch_all_tier_a_news
 
 PROMPT_PATH = Path(__file__).parent.parent / "config" / "prompts" / "context_agent.txt"
-QWEN_MODEL = "qwen/qwen3.6-plus-preview:free"
 
 
 async def run(
@@ -33,14 +27,6 @@ async def run(
     settings: Settings,
     cache: CacheService | None = None,
 ) -> AgentContext:
-    """
-    Ejecuta el pipeline de contexto:
-    1. Busca en cache (30 min TTL)
-    2. Fetch datos de mercado USA (Finnhub) + ARG (BYMA)
-    3. Fetch noticias (Marketaux + RSS tier A + Finnhub)
-    4. Llama a Qwen para filtrar/resumir
-    5. Retorna AgentContext comprimido
-    """
     all_tickers = list(set(tickers_usa + tickers_byma))
     cache_key = f"context_{'_'.join(sorted(all_tickers))}"
 
@@ -58,8 +44,10 @@ async def run(
         return_exceptions=False,
     )
 
-    # Filtrar y resumir con Qwen
-    filtered_news = await _filter_with_qwen(news_items, all_tickers, market_overview, settings)
+    filtered_news, _ = await asyncio.gather(
+        _filter_news(news_items, all_tickers, market_overview, settings),
+        _enrich_with_technicals(market_overview, tickers_usa),
+    )
 
     news_collection = NewsCollection(
         items=filtered_news,
@@ -84,11 +72,9 @@ async def _fetch_market_data(
 ) -> MarketOverview:
     snapshots: list[MarketSnapshot] = []
 
-    # USA via Finnhub
     if settings.finnhub_api_key:
         finnhub = FinnhubClient(settings.finnhub_api_key)
-        tasks = [finnhub.get_quote(t) for t in tickers_usa]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        results = await asyncio.gather(*[finnhub.get_quote(t) for t in tickers_usa], return_exceptions=True)
         for r in results:
             if isinstance(r, MarketSnapshot):
                 snapshots.append(r)
@@ -98,7 +84,6 @@ async def _fetch_market_data(
         logger.warning("FINNHUB_API_KEY no configurada — usando yfinance como fallback")
         snapshots.extend(await _fetch_yfinance(tickers_usa))
 
-    # ARG via BYMA
     if tickers_byma:
         try:
             byma = BYMAClient()
@@ -123,8 +108,7 @@ async def _fetch_all_news(tickers: list[str], settings: Settings) -> list[NewsIt
 
     if settings.finnhub_api_key:
         finnhub = FinnhubClient(settings.finnhub_api_key)
-        news_tasks = [finnhub.get_company_news(t, settings.news_hours_back) for t in tickers[:5]]
-        tasks.extend(news_tasks)
+        tasks.extend([finnhub.get_company_news(t, settings.news_hours_back) for t in tickers[:5]])
         tasks.append(finnhub.get_market_news())
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -135,7 +119,6 @@ async def _fetch_all_news(tickers: list[str], settings: Settings) -> list[NewsIt
         elif isinstance(r, Exception):
             logger.warning(f"Error fetching news: {r}")
 
-    # Deduplicar por URL
     seen_urls: set[str] = set()
     unique: list[NewsItem] = []
     for item in items:
@@ -147,65 +130,101 @@ async def _fetch_all_news(tickers: list[str], settings: Settings) -> list[NewsIt
     return unique
 
 
-async def _filter_with_qwen(
+async def _filter_news(
     news_items: list[NewsItem],
     tickers: list[str],
     market: MarketOverview,
     settings: Settings,
 ) -> list[NewsItem]:
-    """Llama a Qwen3.6 para filtrar y puntuar noticias. Fallback: retorna tier A."""
-    if not settings.openrouter_api_key or not news_items:
-        # Sin Qwen, devolver solo tier A y limitar cantidad
-        tier_a = [n for n in news_items if n.source_tier == "A"]
-        return tier_a[:20] or news_items[:20]
+    """
+    Groq primero (gratis, rápido). Fallback: OpenRouter race. Si nada, tier A directo.
+    """
+    if not news_items:
+        return []
 
-    try:
-        prompt_template = PROMPT_PATH.read_text()
-        raw_news_text = "\n".join(
-            f"- [{n.source_tier}] {n.headline} | {n.source} | {n.url}" for n in news_items[:50]
-        )
-        market_text = market.to_context_block()
-        prompt = prompt_template.format(
-            tickers=", ".join(tickers),
-            raw_news=raw_news_text,
-            market_data=market_text,
-        )
+    raw_news_text = "\n".join(
+        f"- [{n.source_tier}] {n.headline[:100]} | {n.source} | {n.url}" for n in news_items[:20]
+    )
+    prompt = (
+        PROMPT_PATH.read_text()
+        .replace("{tickers}", ", ".join(tickers))
+        .replace("{raw_news}", raw_news_text)
+        .replace("{market_data}", market.to_context_block())
+    )
 
-        client = AsyncOpenAI(
-            base_url="https://openrouter.ai/api/v1",
-            api_key=settings.openrouter_api_key,
-        )
-        response = await client.chat.completions.create(
-            model=QWEN_MODEL,
+    content: str | None = None
+
+    if settings.groq_api_key:
+        try:
+            client = build_groq_client(settings.groq_api_key)
+            response = await asyncio.wait_for(
+                client.chat.completions.create(
+                    model="llama-3.1-8b-instant",
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=4000,
+                ),
+                timeout=15.0,
+            )
+            content = response.choices[0].message.content
+            logger.info("Contexto: filtrado con Groq llama-3.1-8b-instant")
+        except Exception as e:
+            logger.warning(f"Groq contexto error: {e}")
+
+    if not content and settings.openrouter_api_key:
+        client = build_openrouter_client(settings.openrouter_api_key)
+        models = await get_free_models(settings.openrouter_api_key)
+        content = await race_models(
+            client,
             messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"},
-            max_tokens=2000,
+            models=models,
+            max_tokens=4000,
+            total_timeout=15.0,
         )
-        result = json.loads(response.choices[0].message.content)
-        filtered = result.get("filtered_news", [])
-        logger.info(f"Qwen filtró: {len(filtered)}/{len(news_items)} noticias")
 
-        # Reconstruir NewsItems desde la respuesta de Qwen
-        items = []
-        url_to_original = {n.url: n for n in news_items}
-        for f in filtered:
-            url = f.get("url", "")
-            if url in url_to_original:
-                original = url_to_original[url]
-                items.append(original.model_copy(update={
-                    "sentiment_score": f.get("sentiment_score", original.sentiment_score),
-                    "related_tickers": f.get("related_tickers", original.related_tickers),
-                }))
-        return items if items else news_items[:20]
+    if content:
+        try:
+            result = extract_json(content)
+            filtered = result.get("filtered_news", [])
+            logger.info(f"Contexto: {len(filtered)}/{len(news_items)} noticias seleccionadas")
+            url_to_original = {n.url: n for n in news_items}
+            items = []
+            for f in filtered:
+                url = f.get("url", "")
+                if url in url_to_original:
+                    original = url_to_original[url]
+                    items.append(original.model_copy(update={
+                        "sentiment_score": f.get("sentiment_score", original.sentiment_score),
+                        "related_tickers": f.get("related_tickers", original.related_tickers),
+                    }))
+            if items:
+                return items
+        except Exception as e:
+            logger.warning(f"Error parseando respuesta de contexto: {e}")
 
+    logger.warning("Contexto: sin IA disponible — usando noticias tier A")
+    tier_a = [n for n in news_items if n.source_tier == "A"]
+    return tier_a[:20] or news_items[:20]
+
+
+async def _enrich_with_technicals(market: MarketOverview, tickers_usa: list[str]) -> None:
+    """Agrega SMA20/SMA50 a los snapshots de USA en paralelo con el filtrado de noticias."""
+    try:
+        from core.services.chart_service import get_histories, get_sma_values
+        histories = await asyncio.wait_for(
+            get_histories(tickers_usa, days=60),
+            timeout=12.0,
+        )
+        for snap in market.snapshots:
+            if snap.ticker in histories:
+                snap.sma20, snap.sma50 = get_sma_values(histories[snap.ticker])
+        logger.info(f"Técnicos: SMAs calculadas para {len(histories)} tickers")
+    except asyncio.TimeoutError:
+        logger.warning("Enriquecimiento técnico: timeout de 12s")
     except Exception as e:
-        logger.warning(f"Qwen falló, usando fallback: {e}")
-        tier_a = [n for n in news_items if n.source_tier == "A"]
-        return tier_a[:20] or news_items[:20]
+        logger.warning(f"Enriquecimiento técnico fallido: {e}")
 
 
 async def _fetch_yfinance(tickers: list[str]) -> list[MarketSnapshot]:
-    """Fallback con yfinance cuando Finnhub no está disponible."""
     try:
         import yfinance as yf
         snapshots = []
