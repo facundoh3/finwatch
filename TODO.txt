@@ -1,0 +1,68 @@
+================================================================================
+finwatch — TODO / Ideas pendientes
+================================================================================
+
+[BUGS CONOCIDOS]
+- Barrons RSS devuelve 403 Forbidden (feed de pago). Buscar URL alternativa
+  o reemplazar con otra fuente Tier A.
+- AP Business RSS (rsshub.app) puede tener límite de requests — monitorear.
+- Reuters feeds.reuters.com dan DNS error en el ambiente de dev. Verificar
+  URLs correctas para Reuters en producción.
+- Streamlit deprecation: reemplazar use_container_width=True por width='stretch'
+  (se rompe después del 2025-12-31).
+- BYMA client da RetryError/ConnectError — verificar si el servicio está
+  disponible o buscar API alternativa para acciones argentinas.
+- OpenRouter race_models timeout frecuente — los modelos de Venice/Nvidia se
+  cuelgan. Considerar filtrar esos providers o reducir per_model_timeout.
+
+[FEATURES PENDIENTES — ALTA PRIORIDAD]
+- Botón de análisis de emergencia ("⚠️ Analizar ahora (emergencia)"):
+  * Bypass del cache de noticias del día — trae noticias en tiempo real
+  * Análisis enfocado SOLO en las posiciones del portfolio
+  * Útil cuando hay noticias drásticas y ya tenés plata invertida
+  * Mostrar alerta prominente si alguna posición está en riesgo
+
+- Accuracy tracker:
+  * Cuando vence el plazo de una posición en el portfolio, registrar si
+    la predicción fue correcta (subió/bajó según lo esperado)
+  * Mostrar % de acierto histórico en el sidebar o tab Portfolio
+  * Base para mejorar el prompt con ejemplos reales de aciertos/errores
+
+[FEATURES PENDIENTES — MEDIA PRIORIDAD]
+- Diff de recomendaciones entre análisis:
+  * Cuando cambia la recomendación de un ticker (ej. WAIT → BUY), mostrar
+    un cartel explicando qué cambió y por qué (comparar con análisis anterior)
+  * Guardar historial de análisis diarios en data/history/YYYY-MM-DD.json
+
+- Más fuentes RSS de calidad:
+  * Verificar URLs actuales de Reuters
+  * Probar Financial Times, Bloomberg Businessweek (pueden tener paywall)
+  * Agregar fuentes en español para cobertura del mercado argentino
+
+- Mejorar cobertura Argentina:
+  * BYMA client no funciona — buscar API alternativa (Rava, Bull Market Brokers)
+  * Agregar cotización dólar blue/MEP como indicador de contexto
+
+[FEATURES PENDIENTES — BAJA PRIORIDAD / LARGO PLAZO]
+- Cache histórico y análisis de patrones:
+  * Guardar análisis diarios durante semanas/meses
+  * Detectar patrones: "la última vez que NVDA tuvo esta configuración
+    de noticias + SMA, la predicción X fue correcta"
+  * Requiere suficiente data histórica propia para ser útil
+
+- Alertas push/email:
+  * Notificación cuando una posición del portfolio cae >3%
+  * Notificación cuando el análisis cambia de WAIT a AVOID en un ticker tuyo
+
+- Selector de ticker custom en el gráfico (escribir cualquier ticker, no solo
+  los del análisis)
+
+[NOTAS TÉCNICAS]
+- Groq llama-3.1-8b-instant: límite 6000 TPM en plan gratuito. No superar
+  30 noticias × ~80 chars en el context filter. Si se necesita más, usar
+  llama-3.3-70b-versatile (límites distintos) o comprimir el prompt.
+- last_analysis.json: TTL 8hs. Si el análisis parece viejo, borrarlo
+  manualmente con: rm config/last_analysis.json
+- Cache de noticias: data/cache/news_YYYY-MM-DD_*.json — se invalida al
+  cambiar el día de cierre NYSE. Borrado manual: rm data/cache/news_*.json
+================================================================================

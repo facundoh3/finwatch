@@ -15,10 +15,9 @@ from core.models.news import NewsItem
 TIER_A_FEEDS = {
     "wsj": "https://feeds.a.dj.com/rss/RSSMarketsMain.xml",
     "cnbc": "https://www.cnbc.com/id/100003114/device/rss/rss.html",
-    "marketwatch": "https://feeds.marketwatch.com/marketwatch/marketpulse/",
-    "reuters_business": "https://feeds.reuters.com/reuters/businessNews",
-    "reuters_finance": "https://feeds.reuters.com/reuters/financialNews",
     "cnbc_investing": "https://www.cnbc.com/id/15839069/device/rss/rss.html",
+    "marketwatch": "https://feeds.marketwatch.com/marketwatch/marketpulse/",
+    "ap_business": "https://rsshub.app/apnews/topics/business-news",
 }
 
 TIER_B_FEEDS = {
