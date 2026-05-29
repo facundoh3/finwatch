@@ -77,3 +77,17 @@ async def analyze(
         f"Pipeline completo: {len(recs.recommendations)} recomendaciones generadas"
     )
     return ctx, recs
+
+
+async def analyze_emergency(tickers_usa: list[str]) -> tuple[AgentContext, RecommendationSet]:
+    """Análisis de emergencia: datos en tiempo real, sin cache, solo los tickers dados."""
+    settings = get_settings()
+    logger.info(f"⚡ Análisis de emergencia: {tickers_usa}")
+    ctx = await context_agent.run(
+        tickers_usa=tickers_usa,
+        tickers_byma=[],
+        settings=settings,
+        cache=None,
+    )
+    recs = await analysis_agent.run(context=ctx, settings=settings)
+    return ctx, recs
