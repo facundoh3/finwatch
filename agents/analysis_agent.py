@@ -68,7 +68,7 @@ async def _run_groq(prompt: str, settings: Settings) -> RecommendationSet | None
             model=GROQ_MODEL,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=2000,
-            temperature=0.3,
+            temperature=0.0,
         )
         text = response.choices[0].message.content
         logger.info(f"Groq ({GROQ_MODEL}): {response.usage.completion_tokens} tokens")

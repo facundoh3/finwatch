@@ -15,21 +15,22 @@ class CacheService:
         safe_key = key.replace("/", "_").replace(":", "_").replace("^", "")
         return self.cache_dir / f"{safe_key}.json"
 
-    def get(self, key: str) -> dict | None:
+    def get(self, key: str, override_ttl_minutes: int | None = None) -> dict | None:
         path = self._path(key)
         if not path.exists():
             return None
         try:
             data = json.loads(path.read_text())
             cached_at = datetime.fromisoformat(data["_cached_at"])
-            if datetime.utcnow() - cached_at > self.ttl:
+            ttl = timedelta(minutes=override_ttl_minutes) if override_ttl_minutes is not None else self.ttl
+            if datetime.utcnow() - cached_at > ttl:
                 logger.debug(f"Cache expirado: {key}")
                 return None
             return data["payload"]
         except (json.JSONDecodeError, KeyError):
             return None
 
-    def set(self, key: str, payload: dict) -> None:
+    def set(self, key: str, payload: dict | list) -> None:
         path = self._path(key)
         wrapper = {"_cached_at": datetime.utcnow().isoformat(), "payload": payload}
         path.write_text(json.dumps(wrapper, default=str, ensure_ascii=False))
