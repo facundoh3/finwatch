@@ -116,7 +116,9 @@ def _sidebar(cfg: dict) -> tuple[list[str], list[str], bool]:
     st.sidebar.divider()
     _render_market_clock()
     _render_news_cache_status()
-    st.sidebar.caption("IA: Groq (gratis) · OpenRouter fallback")
+    _render_tracker_stats()
+    _render_economic_calendar()
+    st.sidebar.caption("IA: Groq + OpenRouter (consenso) · fallback Claude")
 
     tickers_usa = tickers_etf + tickers_acciones
     return tickers_usa, tickers_byma, force_refresh
@@ -150,6 +152,49 @@ def _render_news_cache_status():
             st.sidebar.caption(f"📰 Noticias: cierre {close_date}")
     except Exception:
         pass
+
+
+def _render_tracker_stats():
+    try:
+        from core.services.tracker_service import get_accuracy_stats
+        stats = get_accuracy_stats()
+        if stats["total"] == 0:
+            st.sidebar.caption(f"🎯 Tracker: sin historial aún · {stats.get('pending', 0)} pendientes")
+            return
+        acc = stats["accuracy"]
+        by_action = stats.get("by_action", {})
+        parts = []
+        for action, s in by_action.items():
+            parts.append(f"{action} {s['pct']}%")
+        detail = " · ".join(parts) if parts else ""
+        st.sidebar.caption(f"🎯 Precisión: {acc}% ({stats['correct']}/{stats['total']}) — {detail}")
+    except Exception:
+        pass
+
+
+def _render_economic_calendar():
+    from config.settings import get_settings
+    s = get_settings()
+    if not s.finnhub_api_key:
+        return
+    if "eco_calendar" not in st.session_state:
+        try:
+            from core.services.finnhub_client import FinnhubClient
+            finnhub = FinnhubClient(s.finnhub_api_key)
+            st.session_state["eco_calendar"] = _run_async(finnhub.get_economic_calendar(days_ahead=7))
+        except Exception:
+            st.session_state["eco_calendar"] = []
+    events = st.session_state.get("eco_calendar", [])
+    if not events:
+        return
+    st.sidebar.divider()
+    st.sidebar.caption("📅 **Próximos eventos macro (USA)**")
+    for ev in events[:5]:
+        impact = ev.get("impact", "")
+        icon = "🔴" if impact == "high" else "🟡"
+        event_date = ev.get("time", "")[:10]
+        name = ev.get("event", "")[:35]
+        st.sidebar.caption(f"{icon} {event_date} · {name}")
 
 
 def _render_market_clock():
@@ -214,6 +259,8 @@ def main():
         with st.spinner("Analizando mercados... (~30 segundos)"):
             try:
                 from agents.orchestrator import analyze
+                from core.services.tracker_service import resolve_pending, save_recommendations
+                old_recs = st.session_state.get("analysis_result", (None, None))[1]
                 ctx, recs = _run_async(
                     analyze(
                         tickers_usa=tickers_usa,
@@ -224,6 +271,15 @@ def main():
                 st.session_state["analysis_result"] = (ctx, recs)
                 st.session_state["analysis_age"] = datetime.now()
                 _save_last_analysis(ctx, recs)
+                # Tracker: resolver pendientes + guardar nuevas
+                current_prices = {s.ticker: s.current_price for s in ctx.market.snapshots}
+                resolve_pending(current_prices)
+                save_recommendations(recs.recommendations, ctx.market.snapshots)
+                # Diff respecto al análisis anterior
+                if old_recs and old_recs.recommendations:
+                    st.session_state["analysis_diff"] = _compute_diff(old_recs, recs)
+                else:
+                    st.session_state.pop("analysis_diff", None)
             except Exception as e:
                 st.error(f"Error al ejecutar el análisis: {e}")
                 return
@@ -267,6 +323,47 @@ def main():
         _render_portfolio_tab(recs, ctx)
 
 
+def _compute_diff(old_recs, new_recs) -> dict:
+    old_map = {r.ticker: r.action.value for r in old_recs.recommendations}
+    diff = {}
+    for r in new_recs.recommendations:
+        old_action = old_map.get(r.ticker)
+        new_action = r.action.value
+        if old_action and old_action != new_action:
+            diff[r.ticker] = (old_action, new_action)
+    return diff
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _fetch_technical_data(tickers: tuple) -> dict:
+    from core.services.chart_service import get_price_history
+    result = {}
+    for ticker in tickers:
+        df = get_price_history(ticker, days=200, interval="1d")
+        if df is not None and not df.empty:
+            result[ticker] = df
+    return result
+
+
+def _render_technicals(ticker: str, snap) -> None:
+    from core.services.technical_service import analyze as tech_analyze
+    df = _fetch_technical_data((ticker,)).get(ticker)
+    if df is None:
+        st.caption("Sin datos técnicos disponibles.")
+        return
+    high_52w = getattr(snap, "high_52w", None) if snap else None
+    report = tech_analyze(ticker, df, getattr(snap, "current_price", None), high_52w)
+    st.markdown(
+        f"<div style='background:{report.grade_color};padding:6px 12px;border-radius:6px;margin:4px 0'>"
+        f"<b>Checklist técnico: {report.summary} · {report.stage}</b>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+    cols = st.columns(3)
+    for i, sig in enumerate(report.signals):
+        cols[i % 3].caption(f"{sig.icon} **{sig.name}** — {sig.detail}")
+
+
 def _show_welcome():
     st.markdown("""
     ### ¿Qué hace finwatch?
@@ -284,10 +381,13 @@ def _render_portfolio_banner(recs, ctx):
         return
 
     alerts = []
-    for ticker in portfolio:
+    for ticker, pos in portfolio.items():
         rec = next((r for r in recs.recommendations if r.ticker == ticker), None)
         snap = ctx.market.get(ticker)
-        if rec and rec.action.value == "AVOID":
+        stop = pos.get("stop_price")
+        if stop and snap and snap.current_price < stop:
+            alerts.append(f"🛑 **{ticker}**: STOP-LOSS perforado — precio ${snap.current_price:.2f} < stop ${stop:.2f}. ¡Salí!")
+        elif rec and rec.action.value == "AVOID":
             alerts.append(f"🔴 **{ticker}**: el modelo recomienda EVITAR — revisá tu posición")
         elif snap and snap.change_pct <= -3:
             alerts.append(f"⬇️ **{ticker}**: bajó {snap.change_pct:.1f}% hoy — posible dip para sumar si el outlook es positivo")
@@ -323,8 +423,14 @@ def _render_recomendaciones(recs, ctx):
         price_info = f" · ${snap.current_price:.2f} ({snap.change_pct:+.1f}%)" if snap else ""
         owned_icon = " ⭐" if is_owned else ""
 
+        diff = st.session_state.get("analysis_diff", {})
+        diff_badge = ""
+        if rec.ticker in diff:
+            old_a, new_a = diff[rec.ticker]
+            diff_badge = f" · **{old_a} → {new_a}** ↕"
+
         with st.expander(
-            f"{display['action_label']} **{rec.ticker}**{price_info}{owned_icon} — {display['confidence_label']}",
+            f"{display['action_label']} **{rec.ticker}**{price_info}{owned_icon} — {display['confidence_label']}{diff_badge}",
             expanded=(rec.action.value == "BUY" or is_owned),
         ):
             st.markdown(
@@ -335,6 +441,9 @@ def _render_recomendaciones(recs, ctx):
             )
             if display["wait_info"]:
                 st.info(f"⏳ {display['wait_info']}")
+
+            _render_technicals(rec.ticker, snap)
+
             if rec.sources:
                 st.markdown("**Fuentes:**")
                 for s in rec.sources[:3]:
@@ -350,7 +459,7 @@ def _render_recomendaciones(recs, ctx):
                     _save_portfolio(p)
                     st.rerun()
             elif rec.action.value in ("BUY", "WAIT"):
-                _render_buy_form(rec.ticker)
+                _render_buy_form(rec.ticker, snap)
 
 
 def _render_position_summary(ticker: str, pos: dict, snap):
@@ -360,20 +469,38 @@ def _render_position_summary(ticker: str, pos: dict, snap):
     days_remaining = max(0, pos["days_to_hold"] - days_elapsed)
     usd_amount = pos["ars_amount"] / pos["usd_rate"] if pos.get("usd_rate") else 0
 
-    col1, col2, col3 = st.columns(3)
-    col1.metric("💰 Invertido", f"${pos['ars_amount']:,.0f} ARS", f"≈ ${usd_amount:.0f} USD @ ${pos.get('usd_rate', 0):.0f}")
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("💰 Invertido", f"${pos['ars_amount']:,.0f} ARS", f"≈ ${usd_amount:.0f} USD")
     col2.metric("📅 Plazo", f"Día {days_elapsed} de {pos['days_to_hold']}", f"{days_remaining}d restantes")
     if snap:
         col3.metric("📈 Precio hoy", f"${snap.current_price:.2f}", f"{snap.change_pct:+.1f}%")
+    stop = pos.get("stop_price")
+    buy_price = pos.get("buy_price")
+    if stop and snap:
+        pct_to_stop = (snap.current_price - stop) / snap.current_price * 100
+        col4.metric("🛑 Stop-loss", f"${stop:.2f}", f"{pct_to_stop:+.1f}% hasta stop")
+    elif buy_price:
+        col4.metric("💵 Precio compra", f"${buy_price:.2f}")
 
-    if days_remaining == 0:
+    if stop and snap and snap.current_price < stop:
+        st.error(f"🛑 **STOP-LOSS PERFORADO** — Compraste a ${buy_price:.2f}, stop en ${stop:.2f}, precio actual ${snap.current_price:.2f}. Considerá salir de la posición.")
+    elif days_remaining == 0:
         st.warning("⏰ Se cumplió el plazo estimado — revisá si es momento de salir.")
     elif snap and snap.change_pct <= -3:
         st.info(f"⬇️ Bajó {snap.change_pct:.1f}% hoy — si el análisis sigue siendo positivo, podría ser un buen momento para sumar.")
 
 
-def _render_buy_form(ticker: str):
+def _render_buy_form(ticker: str, snap=None):
+    from core.services.technical_service import calc_stop_loss
     with st.expander(f"📥 Registrar compra de {ticker}"):
+        default_price = float(snap.current_price) if snap else 0.0
+        buy_price = st.number_input(
+            "Precio de compra por acción (USD)",
+            min_value=0.0, value=default_price, step=0.01, format="%.2f", key=f"price_{ticker}",
+        )
+        if buy_price > 0:
+            stop = calc_stop_loss(buy_price)
+            st.caption(f"🛑 Stop-loss sugerido (O'Neil -7%): **${stop:.2f}** · Salí si cae por debajo de este precio.")
         ars_amount = st.number_input(
             "¿Cuánto invertiste? (ARS)",
             min_value=0, step=1000, key=f"ars_{ticker}",
@@ -391,12 +518,15 @@ def _render_buy_form(ticker: str):
 
         if st.button(f"✅ Guardar compra de {ticker}", key=f"save_{ticker}"):
             if ars_amount > 0:
+                from core.services.technical_service import calc_stop_loss
                 p = _load_portfolio()
                 p[ticker] = {
                     "ars_amount": float(ars_amount),
                     "usd_rate": float(usd_rate),
                     "days_to_hold": int(days_to_hold),
                     "date_bought": date.today().isoformat(),
+                    "buy_price": float(buy_price) if buy_price > 0 else None,
+                    "stop_price": calc_stop_loss(buy_price) if buy_price > 0 else None,
                 }
                 _save_portfolio(p)
                 st.success(f"✅ {ticker} guardada en tu portafolio")
@@ -428,7 +558,13 @@ def _render_portfolio_tab(recs, ctx):
         days_remaining = max(0, pos["days_to_hold"] - days_elapsed)
         usd_amount = pos["ars_amount"] / pos["usd_rate"] if pos.get("usd_rate") else 0
 
-        if rec and rec.action.value == "AVOID":
+        stop = pos.get("stop_price")
+        buy_price = pos.get("buy_price")
+        stop_triggered = stop and snap and snap.current_price < stop
+
+        if stop_triggered:
+            icon, alert_fn, alert_msg = "🛑", st.error, f"STOP-LOSS PERFORADO — compraste a ${buy_price:.2f}, stop en ${stop:.2f}, precio actual ${snap.current_price:.2f}. ¡Considerá salir!"
+        elif rec and rec.action.value == "AVOID":
             icon, alert_fn, alert_msg = "🔴", st.error, "El modelo recomienda EVITAR — considerá reducir o salir de la posición"
         elif snap and snap.change_pct <= -3:
             icon, alert_fn, alert_msg = "⬇️", st.info, f"Bajó {snap.change_pct:.1f}% hoy — posible dip para sumar si el outlook es positivo"
@@ -439,10 +575,12 @@ def _render_portfolio_tab(recs, ctx):
         else:
             icon, alert_fn, alert_msg = "🟢", None, None
 
-        with st.expander(
-            f"{icon} **{ticker}** — Día {days_elapsed} de {pos['days_to_hold']} · {days_remaining}d restantes",
-            expanded=True,
-        ):
+        expander_title = f"{icon} **{ticker}** — Día {days_elapsed} de {pos['days_to_hold']} · {days_remaining}d restantes"
+        if stop and snap:
+            pct_to_stop = (snap.current_price - stop) / snap.current_price * 100
+            expander_title += f" · Stop ${stop:.2f} ({pct_to_stop:+.1f}%)"
+
+        with st.expander(expander_title, expanded=True):
             if alert_fn:
                 alert_fn(alert_msg)
 
@@ -539,7 +677,9 @@ def _render_precios(ctx, recs=None):
         days, interval = _PERIODS[period_label]
     if selected:
         rec = next((r for r in recs.recommendations if r.ticker == selected), None) if recs else None
-        _render_price_chart(selected, days=days, interval=interval, rec=rec)
+        portfolio = _load_portfolio()
+        stop_price = portfolio.get(selected, {}).get("stop_price")
+        _render_price_chart(selected, days=days, interval=interval, rec=rec, stop_price=stop_price)
 
 
 def _render_rec_banner(rec) -> None:
@@ -559,7 +699,7 @@ def _render_rec_banner(rec) -> None:
     )
 
 
-def _render_price_chart(ticker: str, days: int = 60, interval: str = "1d", rec=None) -> None:
+def _render_price_chart(ticker: str, days: int = 60, interval: str = "1d", rec=None, stop_price: float | None = None) -> None:
     # Cada período descarga datos con distinta granularidad (TradingView style)
     cache_key = f"chart_{ticker}_{interval}_{days}"
     if cache_key not in st.session_state:
@@ -632,6 +772,15 @@ def _render_price_chart(ticker: str, days: int = 60, interval: str = "1d", rec=N
         fig.update_yaxes(gridcolor="#2a2a2a", showgrid=True)
         fig.update_yaxes(title_text="Precio (USD)", row=1, col=1)
         fig.update_yaxes(title_text="Volumen", row=2, col=1)
+
+        if stop_price:
+            fig.add_hline(
+                y=stop_price,
+                line=dict(color="#ef5350", width=1.5, dash="dash"),
+                annotation_text=f"Stop ${stop_price:.2f}",
+                annotation_font_color="#ef5350",
+                row=1, col=1,
+            )
 
         if rec:
             _render_rec_banner(rec)

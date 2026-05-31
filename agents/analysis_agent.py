@@ -1,7 +1,9 @@
 """
 Analysis Agent — genera recomendaciones BUY/WAIT/AVOID.
-Usa race_models: corre 4 modelos en paralelo, toma el primero que responda (max 25s).
+Consenso: corre Groq + OpenRouter en paralelo, voto mayoritario por ticker.
+Si los modelos no coinciden → WAIT (postura conservadora).
 """
+import asyncio
 from pathlib import Path
 
 from loguru import logger
@@ -16,49 +18,87 @@ GROQ_MODEL = "llama-3.3-70b-versatile"
 
 
 async def run(context: AgentContext, settings: Settings) -> RecommendationSet:
-    """
-    Orden: Groq (gratis, rápido) → Claude (pago) → OpenRouter (modelos gratuitos, lento).
-    """
     prompt = _build_prompt(context)
 
-    if settings.groq_api_key:
-        result = await _run_groq(prompt, settings)
-        if result and result.recommendations:
-            return result
+    # Correr Groq y OpenRouter en paralelo para consenso
+    tasks = []
+    labels = []
 
-    if settings.anthropic_api_key:
-        result = await _run_claude(prompt, settings)
-        if result and result.recommendations:
-            return result
+    if settings.groq_api_key:
+        tasks.append(_run_groq(prompt, settings))
+        labels.append("groq")
 
     if settings.openrouter_api_key:
-        client = build_openrouter_client(settings.openrouter_api_key)
-        models = await get_free_models(settings.openrouter_api_key)
-        content = await race_models(
-            client,
-            messages=[{"role": "user", "content": prompt}],
-            models=models,
-            max_tokens=4000,
-            temperature=0.3,
-            total_timeout=25.0,
-        )
-        if content:
-            result = _parse(content)
-            if result and result.recommendations:
-                logger.info(f"Análisis listo ({len(result.recommendations)} recomendaciones)")
-                return result
+        tasks.append(_run_openrouter(prompt, settings))
+        labels.append("openrouter")
 
+    if not tasks and settings.anthropic_api_key:
+        result = await _run_claude(prompt, settings)
+        return result or _fallback()
+
+    if not tasks:
+        return _fallback()
+
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    valid = []
+    for label, r in zip(labels, results):
+        if isinstance(r, RecommendationSet) and r.recommendations:
+            logger.info(f"Consenso: {label} respondió con {len(r.recommendations)} recomendaciones")
+            valid.append(r)
+        elif isinstance(r, Exception):
+            logger.warning(f"Consenso: {label} falló: {r}")
+
+    if not valid:
+        if settings.anthropic_api_key:
+            result = await _run_claude(prompt, settings)
+            return result or _fallback()
+        return _fallback()
+
+    if len(valid) == 1:
+        return valid[0]
+
+    # Dos resultados: aplicar voto mayoritario
+    return _merge_consensus(valid[0], valid[1])
+
+
+def _merge_consensus(primary: RecommendationSet, secondary: RecommendationSet) -> RecommendationSet:
+    """
+    Compara recomendaciones ticker por ticker.
+    Si coinciden → mantener con confidence original.
+    Si difieren → WAIT (conservador), confidence LOW.
+    """
+    secondary_map = {r.ticker: r for r in secondary.recommendations}
+    merged = []
+    agreements = 0
+    disagreements = 0
+
+    for rec in primary.recommendations:
+        sec = secondary_map.get(rec.ticker)
+        if sec and sec.action != rec.action:
+            disagreements += 1
+            merged.append(rec.model_copy(update={
+                "action": Action.WAIT,
+                "confidence": "LOW",
+                "reasoning": (
+                    f"[Modelos en desacuerdo — postura conservadora] "
+                    f"Modelo 1: {rec.action.value}. Modelo 2: {sec.action.value}. "
+                    f"{rec.reasoning[:200]}"
+                ),
+                "wait_days": rec.wait_days or 5,
+            }))
+        else:
+            agreements += 1
+            merged.append(rec)
+
+    logger.info(f"Consenso: {agreements} acuerdos, {disagreements} desacuerdos → WAIT conservador")
     return RecommendationSet(
-        market_summary=(
-            "Los modelos de IA no respondieron. "
-            "Agregá ANTHROPIC_API_KEY en .env para análisis confiable."
-        )
+        recommendations=merged,
+        market_summary=primary.market_summary,
     )
 
 
 def _build_prompt(context: AgentContext) -> str:
-    template = PROMPT_PATH.read_text()
-    return template.replace("{context_block}", context.to_claude_prompt_block())
+    return PROMPT_PATH.read_text().replace("{context_block}", context.to_claude_prompt_block())
 
 
 async def _run_groq(prompt: str, settings: Settings) -> RecommendationSet | None:
@@ -78,6 +118,24 @@ async def _run_groq(prompt: str, settings: Settings) -> RecommendationSet | None
         return None
 
 
+async def _run_openrouter(prompt: str, settings: Settings) -> RecommendationSet | None:
+    try:
+        client = build_openrouter_client(settings.openrouter_api_key)
+        models = await get_free_models(settings.openrouter_api_key)
+        content = await race_models(
+            client,
+            messages=[{"role": "user", "content": prompt}],
+            models=models,
+            max_tokens=2000,
+            temperature=0.0,
+            total_timeout=25.0,
+        )
+        return _parse(content) if content else None
+    except Exception as e:
+        logger.warning(f"OpenRouter error: {e}")
+        return None
+
+
 async def _run_claude(prompt: str, settings: Settings) -> RecommendationSet | None:
     try:
         import anthropic
@@ -87,12 +145,17 @@ async def _run_claude(prompt: str, settings: Settings) -> RecommendationSet | No
             max_tokens=1500,
             messages=[{"role": "user", "content": prompt}],
         )
-        response_text = message.content[0].text
-        logger.info(f"Claude: {message.usage.output_tokens} tokens output")
-        return _parse(response_text)
+        logger.info(f"Claude: {message.usage.output_tokens} tokens")
+        return _parse(message.content[0].text)
     except Exception as e:
         logger.warning(f"Claude error: {e}")
         return None
+
+
+def _fallback() -> RecommendationSet:
+    return RecommendationSet(
+        market_summary="Los modelos de IA no respondieron. Agregá GROQ_API_KEY o ANTHROPIC_API_KEY en .env."
+    )
 
 
 def _parse(text: str) -> RecommendationSet | None:
