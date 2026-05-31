@@ -534,7 +534,7 @@ def _render_precios(ctx, recs=None):
         selected = st.selectbox("📊 Ver gráfico de:", tickers, index=default_idx, key="chart_ticker")
     with col_per:
         # Cada período usa distinta granularidad — descomposición real estilo TradingView
-        _PERIODS = {"1 Sem": (5, "1h"), "1 Mes": (30, "1d"), "6 Meses": (180, "1wk")}
+        _PERIODS = {"1 Sem": (7, "1d"), "1 Mes": (30, "1d"), "6 Meses": (180, "1wk")}
         period_label = st.radio("Período", list(_PERIODS.keys()), index=1, key="chart_period")
         days, interval = _PERIODS[period_label]
     if selected:
@@ -612,8 +612,12 @@ def _render_price_chart(ticker: str, days: int = 60, interval: str = "1d", rec=N
             name="Volumen", marker_color=vol_colors, opacity=0.7,
         ), row=2, col=1)
 
-        _titles = {"1h": f"{ticker} — última semana (horario)", "1wk": f"{ticker} — últimos 6 meses (semanal)", "1d": f"{ticker} — último mes (diario)"}
-        _title = _titles.get(interval, f"{ticker} — {days}d")
+        _titles = {
+            (7, "1d"): f"{ticker} — última semana (diario)",
+            (30, "1d"): f"{ticker} — último mes (diario)",
+            (180, "1wk"): f"{ticker} — últimos 6 meses (semanal)",
+        }
+        _title = _titles.get((days, interval), f"{ticker} — {days}d")
         fig.update_layout(
             title=_title,
             height=520,

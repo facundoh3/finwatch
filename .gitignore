@@ -12,3 +12,4 @@ build/
 .venv/
 venv/
 config/last_analysis.json
+config/portfolio.json
