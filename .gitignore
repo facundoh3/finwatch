@@ -11,3 +11,4 @@ dist/
 build/
 .venv/
 venv/
+config/last_analysis.json

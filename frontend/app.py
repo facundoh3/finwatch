@@ -457,11 +457,37 @@ def _render_portfolio_tab(recs, ctx):
                 action_labels = {"BUY": "✅ Sumar más", "WAIT": "⏳ Mantener — todavía no es momento", "AVOID": "❌ Salir de la posición"}
                 st.info(f"**Recomendación actual:** {action_labels.get(rec.action.value, rec.action.value)}\n\n{rec.reasoning[:250]}...")
 
-            if st.button(f"Eliminar {ticker}", key=f"ptab_del_{ticker}"):
-                p = _load_portfolio()
-                p.pop(ticker, None)
-                _save_portfolio(p)
-                st.rerun()
+            col_emrg, col_del = st.columns([2, 1])
+            with col_emrg:
+                if st.button(f"⚡ Análisis de emergencia", key=f"emrg_{ticker}"):
+                    with st.spinner(f"Analizando {ticker} en tiempo real..."):
+                        try:
+                            from agents.orchestrator import analyze_emergency
+                            _, emrg_recs = _run_async(analyze_emergency([ticker]))
+                            emrg_rec = next((r for r in emrg_recs.recommendations if r.ticker == ticker), None)
+                            st.session_state[f"emrg_result_{ticker}"] = emrg_rec
+                        except Exception as e:
+                            st.error(f"Error en análisis de emergencia: {e}")
+
+            if st.session_state.get(f"emrg_result_{ticker}"):
+                er = st.session_state[f"emrg_result_{ticker}"]
+                icons = {"BUY": "✅", "WAIT": "⏳", "AVOID": "❌"}
+                bg = {"BUY": "#1a4a1a", "WAIT": "#4a3a00", "AVOID": "#4a1010"}
+                action = er.action.value
+                st.markdown(
+                    f"<div style='background:{bg.get(action,'#333')};padding:8px 12px;border-radius:6px;margin:4px 0'>"
+                    f"<b>⚡ Emergencia: {icons.get(action,'')} {action}</b>"
+                    + (f"<br><small>{er.reasoning[:200]}…</small>" if er.reasoning else "")
+                    + "</div>",
+                    unsafe_allow_html=True,
+                )
+
+            with col_del:
+                if st.button(f"Eliminar {ticker}", key=f"ptab_del_{ticker}"):
+                    p = _load_portfolio()
+                    p.pop(ticker, None)
+                    _save_portfolio(p)
+                    st.rerun()
 
     st.divider()
     st.caption("Las posiciones se guardan en `config/portfolio.json` y persisten entre sesiones.")
@@ -507,12 +533,13 @@ def _render_precios(ctx, recs=None):
     with col_sel:
         selected = st.selectbox("📊 Ver gráfico de:", tickers, index=default_idx, key="chart_ticker")
     with col_per:
-        period_map = {"1 Sem": 7, "1 Mes": 30, "60 Días": 60}
-        period_label = st.radio("Período", list(period_map.keys()), index=2, key="chart_period")
-        days = period_map[period_label]
+        # (días, intervalo) — 1h da velas horarias que descomponen el día en detalles
+        _PERIODS = {"1 Sem": (5, "1h"), "1 Mes": (30, "1d"), "60 Días": (60, "1d")}
+        period_label = st.radio("Período", list(_PERIODS.keys()), index=2, key="chart_period")
+        days, interval = _PERIODS[period_label]
     if selected:
         rec = next((r for r in recs.recommendations if r.ticker == selected), None) if recs else None
-        _render_price_chart(selected, days=days, rec=rec)
+        _render_price_chart(selected, days=days, interval=interval, rec=rec)
 
 
 def _render_rec_banner(rec) -> None:
@@ -532,13 +559,13 @@ def _render_rec_banner(rec) -> None:
     )
 
 
-def _render_price_chart(ticker: str, days: int = 60, rec=None) -> None:
-    # Siempre descarga 60 días; el período solo hace zoom (TradingView style)
-    cache_key = f"chart_{ticker}"
+def _render_price_chart(ticker: str, days: int = 60, interval: str = "1d", rec=None) -> None:
+    # Cada período descarga datos con distinta granularidad (TradingView style)
+    cache_key = f"chart_{ticker}_{interval}_{days}"
     if cache_key not in st.session_state:
         with st.spinner(f"Cargando historial de {ticker}..."):
             from core.services.chart_service import get_price_history
-            st.session_state[cache_key] = get_price_history(ticker, days=60)
+            st.session_state[cache_key] = get_price_history(ticker, days=days, interval=interval)
 
     df = st.session_state.get(cache_key)
     if df is None or df.empty:
@@ -585,8 +612,9 @@ def _render_price_chart(ticker: str, days: int = 60, rec=None) -> None:
             name="Volumen", marker_color=vol_colors, opacity=0.7,
         ), row=2, col=1)
 
+        _title = f"{ticker} — última semana (velas horarias)" if interval == "1h" else f"{ticker} — últimos {days} días"
         fig.update_layout(
-            title=f"{ticker} — últimos {days} días",
+            title=_title,
             height=520,
             xaxis_rangeslider_visible=False,
             legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0),
@@ -599,11 +627,6 @@ def _render_price_chart(ticker: str, days: int = 60, rec=None) -> None:
         fig.update_yaxes(gridcolor="#2a2a2a", showgrid=True)
         fig.update_yaxes(title_text="Precio (USD)", row=1, col=1)
         fig.update_yaxes(title_text="Volumen", row=2, col=1)
-
-        # Zoom por período sobre los 60 días descargados
-        last_date = df.index[-1]
-        start_date = last_date - timedelta(days=days)
-        fig.update_xaxes(range=[str(start_date.date()), str((last_date + timedelta(days=1)).date())])
 
         if rec:
             _render_rec_banner(rec)
