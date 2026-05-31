@@ -13,3 +13,4 @@ build/
 venv/
 config/last_analysis.json
 config/portfolio.json
+config/recommendation_tracker.json
