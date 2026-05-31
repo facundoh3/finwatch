@@ -112,7 +112,7 @@ def _sidebar(cfg: dict) -> tuple[list[str], list[str], bool]:
     )
 
     st.sidebar.divider()
-    force_refresh = st.sidebar.button("🔄 Analizar ahora", use_container_width=True)
+    force_refresh = st.sidebar.button("🔄 Analizar ahora", width="stretch")
     st.sidebar.divider()
     _render_market_clock()
     _render_news_cache_status()
@@ -523,7 +523,7 @@ def _render_precios(ctx, recs=None):
             "Volumen": f"{s.volume/1_000_000:.1f}M" if s.volume >= 1_000_000 else str(s.volume),
         })
 
-    st.dataframe(rows, use_container_width=True, hide_index=True)
+    st.dataframe(rows, width="stretch", hide_index=True)
 
     st.divider()
     tickers = [s.ticker for s in ctx.market.snapshots]
@@ -533,9 +533,9 @@ def _render_precios(ctx, recs=None):
     with col_sel:
         selected = st.selectbox("📊 Ver gráfico de:", tickers, index=default_idx, key="chart_ticker")
     with col_per:
-        # (días, intervalo) — 1h da velas horarias que descomponen el día en detalles
-        _PERIODS = {"1 Sem": (5, "1h"), "1 Mes": (30, "1d"), "60 Días": (60, "1d")}
-        period_label = st.radio("Período", list(_PERIODS.keys()), index=2, key="chart_period")
+        # Cada período usa distinta granularidad — descomposición real estilo TradingView
+        _PERIODS = {"1 Sem": (5, "1h"), "1 Mes": (30, "1d"), "6 Meses": (180, "1wk")}
+        period_label = st.radio("Período", list(_PERIODS.keys()), index=1, key="chart_period")
         days, interval = _PERIODS[period_label]
     if selected:
         rec = next((r for r in recs.recommendations if r.ticker == selected), None) if recs else None
@@ -612,7 +612,8 @@ def _render_price_chart(ticker: str, days: int = 60, interval: str = "1d", rec=N
             name="Volumen", marker_color=vol_colors, opacity=0.7,
         ), row=2, col=1)
 
-        _title = f"{ticker} — última semana (velas horarias)" if interval == "1h" else f"{ticker} — últimos {days} días"
+        _titles = {"1h": f"{ticker} — última semana (horario)", "1wk": f"{ticker} — últimos 6 meses (semanal)", "1d": f"{ticker} — último mes (diario)"}
+        _title = _titles.get(interval, f"{ticker} — {days}d")
         fig.update_layout(
             title=_title,
             height=520,
@@ -631,7 +632,7 @@ def _render_price_chart(ticker: str, days: int = 60, interval: str = "1d", rec=N
         if rec:
             _render_rec_banner(rec)
 
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
     except ImportError:
         st.warning("Instalá plotly para ver el gráfico de velas: `pip install plotly`")

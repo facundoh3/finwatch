@@ -17,7 +17,6 @@ TIER_A_FEEDS = {
     "cnbc": "https://www.cnbc.com/id/100003114/device/rss/rss.html",
     "cnbc_investing": "https://www.cnbc.com/id/15839069/device/rss/rss.html",
     "marketwatch": "https://feeds.marketwatch.com/marketwatch/marketpulse/",
-    "ap_business": "https://rsshub.app/apnews/topics/business-news",
 }
 
 TIER_B_FEEDS = {

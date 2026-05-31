@@ -8,12 +8,18 @@ from loguru import logger
 def get_price_history(ticker: str, days: int = 60, interval: str = "1d") -> pd.DataFrame | None:
     """
     Descarga historial OHLCV y calcula SMA20/SMA50.
-    interval="1h" → velas horarias (últimos 5 días de mercado, ignora `days`)
-    interval="1d" → velas diarias (usa `days`)
+    interval="1h"  → velas horarias, últimos 5 días de mercado
+    interval="1wk" → velas semanales, últimos 6 meses
+    interval="1d"  → velas diarias, usa `days`
     """
     try:
         import yfinance as yf
-        period = "5d" if interval == "1h" else f"{days}d"
+        if interval == "1h":
+            period = "5d"
+        elif interval == "1wk":
+            period = "6mo"
+        else:
+            period = f"{days}d"
         df = yf.Ticker(ticker).history(period=period, interval=interval)
         if df.empty:
             return None
