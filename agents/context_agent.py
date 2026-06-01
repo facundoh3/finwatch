@@ -113,7 +113,11 @@ async def _fetch_market_data(
                     snap = next(s for s in byma_snapshots if s.ticker == t.upper())
                     snapshots.append(snap)
         except Exception as e:
-            logger.warning(f"Error BYMA: {e}")
+            logger.warning(f"Error BYMA: {e} — usando yfinance .BA como fallback")
+            byma_fallback = await _fetch_yfinance_byma(tickers_byma)
+            snapshots.extend(byma_fallback)
+            if byma_fallback:
+                logger.info(f"BYMA fallback: {len(byma_fallback)} tickers via yfinance .BA")
 
     return MarketOverview(snapshots=snapshots)
 
@@ -242,6 +246,43 @@ async def _enrich_with_technicals(market: MarketOverview, tickers_usa: list[str]
         logger.warning("Enriquecimiento técnico: timeout de 12s")
     except Exception as e:
         logger.warning(f"Enriquecimiento técnico fallido: {e}")
+
+
+async def _fetch_yfinance_byma(tickers: list[str]) -> list[MarketSnapshot]:
+    """Obtiene precios BYMA usando yfinance con sufijo .BA. Retorna snapshots con el ticker original."""
+    loop = asyncio.get_running_loop()
+    results = await asyncio.gather(
+        *[loop.run_in_executor(None, _get_byma_snapshot_sync, t) for t in tickers],
+        return_exceptions=True,
+    )
+    return [r for r in results if isinstance(r, MarketSnapshot)]
+
+
+def _get_byma_snapshot_sync(ticker: str) -> MarketSnapshot | None:
+    try:
+        import yfinance as yf
+        t = yf.Ticker(f"{ticker}.BA")
+        info = t.fast_info
+        last = getattr(info, "last_price", None) or getattr(info, "regularMarketPrice", 0)
+        prev = getattr(info, "previous_close", last) or last
+        if not last or last <= 0:
+            return None
+        return MarketSnapshot(
+            ticker=ticker,  # sin .BA — lo mostramos con nombre original
+            current_price=last,
+            previous_close=prev,
+            change_amount=last - prev,
+            change_pct=((last - prev) / prev * 100) if prev else 0.0,
+            high_today=getattr(info, "day_high", last) or last,
+            low_today=getattr(info, "day_low", last) or last,
+            open_price=getattr(info, "open", prev) or prev,
+            volume=int(getattr(info, "three_month_average_volume", 0) or 0),
+            high_52w=getattr(info, "year_high", None),
+            low_52w=getattr(info, "year_low", None),
+        )
+    except Exception as e:
+        logger.debug(f"yfinance BYMA {ticker}.BA: {e}")
+        return None
 
 
 async def _fetch_yfinance(tickers: list[str]) -> list[MarketSnapshot]:
