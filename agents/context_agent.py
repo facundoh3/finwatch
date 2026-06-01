@@ -21,8 +21,8 @@ from core.services.rss_client import fetch_all_tier_a_news
 
 PROMPT_PATH = Path(__file__).parent.parent / "config" / "prompts" / "context_agent.txt"
 
-
-_NEWS_CACHE_TTL = 1440  # minutos (24hs) — se invalida solo cuando cambia la fecha de cierre
+_NEWS_CACHE_TTL = 1440      # minutos — días de semana, se invalida al cambiar cierre NYSE
+_WEEKEND_CACHE_TTL = 360    # minutos — fin de semana, se refresca cada 6h
 
 
 async def run(
@@ -30,26 +30,40 @@ async def run(
     tickers_byma: list[str],
     settings: Settings,
     cache: CacheService | None = None,
+    news_hours_back: int | None = None,
 ) -> AgentContext:
+    from datetime import date
     all_tickers = sorted(set(tickers_usa + tickers_byma))
     close_date = get_last_close_date()
-    news_key = f"news_{close_date}_{'_'.join(all_tickers)}"
+    today = date.today()
+    is_weekend = today.weekday() >= 5
+    actual_hours = news_hours_back or settings.news_hours_back
 
-    logger.info(f"Fetcheando datos para: {all_tickers} | cierre: {close_date}")
+    if is_weekend:
+        # Fin de semana: caché por día real (no por cierre NYSE) y ventana de 72h para capturar todo
+        news_key = f"news_weekend_{today.isoformat()}_{'_'.join(all_tickers)}"
+        cache_ttl = _WEEKEND_CACHE_TTL
+        actual_hours = max(actual_hours, 72)
+        logger.info(f"Fin de semana: ventana de noticias ampliada a {actual_hours}h")
+    else:
+        news_key = f"news_{close_date}_{'_'.join(all_tickers)}"
+        cache_ttl = _NEWS_CACHE_TTL
+
+    logger.info(f"Fetcheando datos para: {all_tickers} | cierre: {close_date} | ventana: {actual_hours}h")
 
     # Precios: siempre frescos
     market_overview = await _fetch_market_data(tickers_usa, tickers_byma, settings)
 
-    # Noticias: cacheadas por día de cierre — estables durante toda la sesión
+    # Noticias: cacheadas por cierre NYSE (días hábiles) o por día (fin de semana)
     filtered_news: list[NewsItem] | None = None
     if cache:
-        cached_news = cache.get(news_key, override_ttl_minutes=_NEWS_CACHE_TTL)
+        cached_news = cache.get(news_key, override_ttl_minutes=cache_ttl)
         if cached_news:
             filtered_news = [NewsItem.model_validate(n) for n in cached_news]
-            logger.info(f"Noticias: cache del cierre {close_date} ({len(filtered_news)} items)")
+            logger.info(f"Noticias: cache {'fin de semana' if is_weekend else f'cierre {close_date}'} ({len(filtered_news)} items)")
 
     if filtered_news is None:
-        news_items = await _fetch_all_news(tickers_usa, settings)
+        news_items = await _fetch_all_news(tickers_usa, settings, actual_hours)
         filtered_news, _ = await asyncio.gather(
             _filter_news(news_items, all_tickers, market_overview, settings),
             _enrich_with_technicals(market_overview, tickers_usa),
@@ -62,7 +76,7 @@ async def run(
     news_collection = NewsCollection(
         items=filtered_news,
         tickers_queried=all_tickers,
-        hours_back=settings.news_hours_back,
+        hours_back=actual_hours,
     )
 
     return AgentContext(
@@ -104,16 +118,17 @@ async def _fetch_market_data(
     return MarketOverview(snapshots=snapshots)
 
 
-async def _fetch_all_news(tickers: list[str], settings: Settings) -> list[NewsItem]:
+async def _fetch_all_news(tickers: list[str], settings: Settings, hours_back: int | None = None) -> list[NewsItem]:
+    window = hours_back or settings.news_hours_back
     tasks = [fetch_all_tier_a_news()]
 
     if settings.marketaux_api_key:
         maux = MarketauxClient(settings.marketaux_api_key)
-        tasks.append(maux.get_news(tickers, settings.news_hours_back))
+        tasks.append(maux.get_news(tickers, window))
 
     if settings.finnhub_api_key:
         finnhub = FinnhubClient(settings.finnhub_api_key)
-        tasks.extend([finnhub.get_company_news(t, settings.news_hours_back) for t in tickers[:5]])
+        tasks.extend([finnhub.get_company_news(t, window) for t in tickers[:5]])
         tasks.append(finnhub.get_market_news())
 
     results = await asyncio.gather(*tasks, return_exceptions=True)

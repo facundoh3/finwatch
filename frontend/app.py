@@ -23,6 +23,7 @@ st.set_page_config(
 _TICKERS_PATH = Path(__file__).parent.parent / "config" / "tickers.yaml"
 _PORTFOLIO_FILE = Path(__file__).parent.parent / "config" / "portfolio.json"
 _ANALYSIS_FILE = Path(__file__).parent.parent / "config" / "last_analysis.json"
+_CI_ANALYSIS_FILE = Path(__file__).parent.parent / "config" / "ci_analysis.json"
 _ANALYSIS_TTL_HOURS = 8
 
 
@@ -46,17 +47,30 @@ def _save_portfolio(portfolio: dict):
 
 
 def _load_last_analysis():
-    if not _ANALYSIS_FILE.exists():
-        return None
-    try:
-        data = json.loads(_ANALYSIS_FILE.read_text())
-        saved_at = datetime.fromisoformat(data["saved_at"])
-        if (datetime.now() - saved_at).total_seconds() > _ANALYSIS_TTL_HOURS * 3600:
+    from core.models.recommendation import AgentContext, RecommendationSet
+
+    def _try_load(path: Path, ttl_hours: float) -> tuple | None:
+        if not path.exists():
             return None
-        from core.models.recommendation import AgentContext, RecommendationSet
-        return AgentContext.model_validate(data["ctx"]), RecommendationSet.model_validate(data["recs"]), saved_at
-    except Exception:
-        return None
+        try:
+            data = json.loads(path.read_text())
+            saved_at = datetime.fromisoformat(data["saved_at"])
+            if (datetime.now() - saved_at).total_seconds() > ttl_hours * 3600:
+                return None
+            return AgentContext.model_validate(data["ctx"]), RecommendationSet.model_validate(data["recs"]), saved_at
+        except Exception:
+            return None
+
+    # Prioridad: análisis local reciente > análisis de CI
+    local = _try_load(_ANALYSIS_FILE, _ANALYSIS_TTL_HOURS)
+    if local:
+        return local
+    # Fallback: análisis del CI (puede ser de hoy si no abriste la app)
+    ci = _try_load(_CI_ANALYSIS_FILE, 20)  # TTL extendido — el CI ya lo evaluó en el mejor momento
+    if ci:
+        source_label = "CI automático"
+        return ci[0], ci[1], ci[2]
+    return None
 
 
 def _save_last_analysis(ctx, recs):

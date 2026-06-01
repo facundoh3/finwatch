@@ -4,6 +4,8 @@ Orquestador del pipeline multiagente finwatch.
 Flujo:
   context_agent (Qwen3.6 gratis) → analysis_agent (Claude Sonnet) → RecommendationSet
 """
+import json
+from datetime import datetime
 from pathlib import Path
 
 import yaml
@@ -15,6 +17,9 @@ from core.models.recommendation import AgentContext, RecommendationSet
 from core.services.cache_service import CacheService
 
 _cache: CacheService | None = None
+_ANALYSIS_FILE = Path(__file__).parent.parent / "config" / "last_analysis.json"
+_NEWS_HOURS_MIN = 24
+_NEWS_HOURS_MAX = 96
 
 
 def _get_cache(settings: Settings) -> CacheService:
@@ -35,22 +40,32 @@ def _load_tickers() -> tuple[list[str], list[str]]:
     return data.get("tickers_usa", []), data.get("tickers_byma", [])
 
 
+def _calc_dynamic_news_hours() -> int:
+    """
+    Calcula cuántas horas de noticias pedir basándose en el tiempo desde el último análisis.
+    Si hay un gap de días (ej: lunes→miércoles), pide más horas para no perder noticias.
+    """
+    try:
+        if not _ANALYSIS_FILE.exists():
+            return _NEWS_HOURS_MIN
+        data = json.loads(_ANALYSIS_FILE.read_text())
+        saved_at = datetime.fromisoformat(data["saved_at"])
+        hours_since = (datetime.now() - saved_at).total_seconds() / 3600
+        # Agrega 4h de buffer y limita entre 24 y 96h
+        dynamic = int(hours_since) + 4
+        result = max(_NEWS_HOURS_MIN, min(dynamic, _NEWS_HOURS_MAX))
+        if result > _NEWS_HOURS_MIN:
+            logger.info(f"News window dinámica: {result}h (último análisis hace {hours_since:.0f}h)")
+        return result
+    except Exception:
+        return _NEWS_HOURS_MIN
+
+
 async def analyze(
     tickers_usa: list[str] | None = None,
     tickers_byma: list[str] | None = None,
     force_refresh: bool = False,
 ) -> tuple[AgentContext, RecommendationSet]:
-    """
-    Ejecuta el pipeline completo.
-
-    Args:
-        tickers_usa: tickers de mercado USA. Si None, usa config/tickers.yaml.
-        tickers_byma: tickers BYMA (mercado ARG). Si None, usa config/tickers.yaml.
-        force_refresh: si True, ignora el cache.
-
-    Returns:
-        (AgentContext, RecommendationSet) listos para el frontend.
-    """
     settings = get_settings()
     cache = _get_cache(settings)
 
@@ -64,18 +79,19 @@ async def analyze(
 
     logger.info(f"Pipeline: USA={tickers_usa} | BYMA={tickers_byma}")
 
+    news_hours = _calc_dynamic_news_hours()
+
     ctx = await context_agent.run(
         tickers_usa=tickers_usa,
         tickers_byma=tickers_byma,
         settings=settings,
         cache=cache,
+        news_hours_back=news_hours,
     )
 
     recs = await analysis_agent.run(context=ctx, settings=settings)
 
-    logger.info(
-        f"Pipeline completo: {len(recs.recommendations)} recomendaciones generadas"
-    )
+    logger.info(f"Pipeline completo: {len(recs.recommendations)} recomendaciones generadas")
     return ctx, recs
 
 
@@ -88,6 +104,8 @@ async def analyze_emergency(tickers_usa: list[str]) -> tuple[AgentContext, Recom
         tickers_byma=[],
         settings=settings,
         cache=None,
+        news_hours_back=_NEWS_HOURS_MIN,
     )
     recs = await analysis_agent.run(context=ctx, settings=settings)
     return ctx, recs
+
