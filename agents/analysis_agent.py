@@ -1,7 +1,8 @@
 """
 Analysis Agent — genera recomendaciones BUY/WAIT/AVOID.
-Consenso: corre Groq + OpenRouter en paralelo, voto mayoritario por ticker.
+Consenso: Groq (primario) + DeepSeek (secundario) en paralelo, voto mayoritario por ticker.
 Si los modelos no coinciden → WAIT (postura conservadora).
+Fallback: Claude → OpenRouter (último recurso).
 """
 import asyncio
 from pathlib import Path
@@ -15,12 +16,13 @@ from core.models.recommendation import Action, AgentContext, Recommendation, Rec
 PROMPT_PATH = Path(__file__).parent.parent / "config" / "prompts" / "analysis_agent.txt"
 CLAUDE_MODEL = "claude-sonnet-4-6"
 GROQ_MODEL = "llama-3.3-70b-versatile"
+DEEPSEEK_MODEL = "deepseek-reasoner"
 
 
 async def run(context: AgentContext, settings: Settings) -> RecommendationSet:
     prompt = _build_prompt(context)
 
-    # Correr Groq y OpenRouter en paralelo para consenso
+    # Consenso: Groq + DeepSeek en paralelo (ambos confiables y rápidos)
     tasks = []
     labels = []
 
@@ -28,15 +30,17 @@ async def run(context: AgentContext, settings: Settings) -> RecommendationSet:
         tasks.append(_run_groq(prompt, settings))
         labels.append("groq")
 
-    if settings.openrouter_api_key:
+    if settings.deepseek_api_key:
+        tasks.append(_run_deepseek(prompt, settings))
+        labels.append("deepseek")
+    elif settings.openrouter_api_key:
+        # DeepSeek no configurado: OpenRouter como secundario (menos confiable)
         tasks.append(_run_openrouter(prompt, settings))
         labels.append("openrouter")
 
-    if not tasks and settings.anthropic_api_key:
-        result = await _run_claude(prompt, settings)
-        return result or _fallback()
-
     if not tasks:
+        if settings.anthropic_api_key:
+            return await _run_claude(prompt, settings) or _fallback()
         return _fallback()
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -44,28 +48,32 @@ async def run(context: AgentContext, settings: Settings) -> RecommendationSet:
     for label, r in zip(labels, results):
         if isinstance(r, RecommendationSet) and r.recommendations:
             logger.info(f"Consenso: {label} respondió con {len(r.recommendations)} recomendaciones")
-            valid.append(r)
+            valid.append((label, r))
         elif isinstance(r, Exception):
             logger.warning(f"Consenso: {label} falló: {r}")
 
     if not valid:
         if settings.anthropic_api_key:
-            result = await _run_claude(prompt, settings)
-            return result or _fallback()
+            return await _run_claude(prompt, settings) or _fallback()
+        if settings.openrouter_api_key and "openrouter" not in labels:
+            return await _run_openrouter(prompt, settings) or _fallback()
         return _fallback()
 
     if len(valid) == 1:
-        return valid[0]
+        return valid[0][1]
 
-    # Dos resultados: aplicar voto mayoritario
-    return _merge_consensus(valid[0], valid[1])
+    # Dos resultados: voto mayoritario
+    label_a, recs_a = valid[0]
+    label_b, recs_b = valid[1]
+    logger.info(f"Aplicando consenso: {label_a} vs {label_b}")
+    return _merge_consensus(recs_a, recs_b)
 
 
 def _merge_consensus(primary: RecommendationSet, secondary: RecommendationSet) -> RecommendationSet:
     """
-    Compara recomendaciones ticker por ticker.
-    Si coinciden → mantener con confidence original.
-    Si difieren → WAIT (conservador), confidence LOW.
+    Compara ticker por ticker.
+    Acuerdo → mantiene recomendación original.
+    Desacuerdo → WAIT conservador con confidence LOW.
     """
     secondary_map = {r.ticker: r for r in secondary.recommendations}
     merged = []
@@ -90,11 +98,8 @@ def _merge_consensus(primary: RecommendationSet, secondary: RecommendationSet) -
             agreements += 1
             merged.append(rec)
 
-    logger.info(f"Consenso: {agreements} acuerdos, {disagreements} desacuerdos → WAIT conservador")
-    return RecommendationSet(
-        recommendations=merged,
-        market_summary=primary.market_summary,
-    )
+    logger.info(f"Consenso: {agreements} acuerdos, {disagreements} desacuerdos")
+    return RecommendationSet(recommendations=merged, market_summary=primary.market_summary)
 
 
 def _build_prompt(context: AgentContext) -> str:
@@ -115,6 +120,28 @@ async def _run_groq(prompt: str, settings: Settings) -> RecommendationSet | None
         return _parse(text)
     except Exception as e:
         logger.warning(f"Groq error: {e}")
+        return None
+
+
+async def _run_deepseek(prompt: str, settings: Settings) -> RecommendationSet | None:
+    try:
+        from openai import AsyncOpenAI
+        client = AsyncOpenAI(
+            base_url="https://api.deepseek.com/v1",
+            api_key=settings.deepseek_api_key,
+            timeout=30.0,
+        )
+        response = await client.chat.completions.create(
+            model=DEEPSEEK_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=2000,
+            temperature=0.0,
+        )
+        text = response.choices[0].message.content
+        logger.info(f"DeepSeek ({DEEPSEEK_MODEL}): {response.usage.completion_tokens} tokens")
+        return _parse(text)
+    except Exception as e:
+        logger.warning(f"DeepSeek error: {e}")
         return None
 
 
@@ -154,7 +181,7 @@ async def _run_claude(prompt: str, settings: Settings) -> RecommendationSet | No
 
 def _fallback() -> RecommendationSet:
     return RecommendationSet(
-        market_summary="Los modelos de IA no respondieron. Agregá GROQ_API_KEY o ANTHROPIC_API_KEY en .env."
+        market_summary="Los modelos de IA no respondieron. Configurá GROQ_API_KEY en .env."
     )
 
 
