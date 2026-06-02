@@ -11,7 +11,7 @@ from loguru import logger
 
 from agents.utils import build_groq_client, build_openrouter_client, extract_json, get_free_models, race_models
 from config.settings import Settings
-from core.models.recommendation import Action, AgentContext, Recommendation, RecommendationSet
+from core.models.recommendation import Action, AgentContext, Confidence, Recommendation, RecommendationSet
 
 PROMPT_PATH = Path(__file__).parent.parent / "config" / "prompts" / "analysis_agent.txt"
 CLAUDE_MODEL = "claude-sonnet-4-6"
@@ -86,7 +86,7 @@ def _merge_consensus(primary: RecommendationSet, secondary: RecommendationSet) -
             disagreements += 1
             merged.append(rec.model_copy(update={
                 "action": Action.WAIT,
-                "confidence": "LOW",
+                "confidence": Confidence.LOW,
                 "reasoning": (
                     f"[Modelos en desacuerdo — postura conservadora] "
                     f"Modelo 1: {rec.action.value}. Modelo 2: {sec.action.value}. "
