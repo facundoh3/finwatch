@@ -23,6 +23,11 @@ acciones_usa:
   - TSLA
   - MSFT
   - AMZN
+  - META      # Facebook/Instagram/WhatsApp — IA y publicidad digital
+  - GOOGL     # Alphabet — búsqueda, YouTube, Google Cloud, IA
+  - AMD       # GPU para IA, competidor directo de NVDA
+  - MELI      # MercadoLibre — fundada en Argentina, ecommerce/fintech latam
+  - JPM       # JPMorgan — banco más grande de USA, termómetro del sistema financiero
 
 tickers_arg_adr:
   - YPF       # YPF S.A. ADR en NYSE
@@ -30,6 +35,8 @@ tickers_arg_adr:
   - BMA       # Banco Macro
   - BBAR      # BBVA Argentina
   - LOMA      # Loma Negra
+  - GLOB      # Globant — tech argentina, cotiza NYSE, clientes Fortune 500
+  - DESP      # Despegar.com — turismo latam
 
 tickers_byma:
   - YPFD      # YPF panel BYMA
@@ -38,6 +45,9 @@ tickers_byma:
   - BBAR      # BBVA Argentina BYMA
   - PAMP      # Pampa Energía
   - ALUA      # Aluar (aluminio)
+  - TECO2     # Telecom Argentina — muy líquida, sector telecom
+  - CEPU      # Central Puerto — generación eléctrica
+  - LOMA      # Loma Negra — cemento, ligada a obra pública
 
 indices:
   - "^MERV"   # S&P Merval (Argentina)

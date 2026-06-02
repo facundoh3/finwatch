@@ -11,7 +11,7 @@ from loguru import logger
 
 from agents.utils import build_groq_client, build_openrouter_client, extract_json, get_free_models, race_models
 from config.settings import Settings
-from core.models.recommendation import Action, AgentContext, Recommendation, RecommendationSet
+from core.models.recommendation import Action, AgentContext, Confidence, Recommendation, RecommendationSet
 
 PROMPT_PATH = Path(__file__).parent.parent / "config" / "prompts" / "analysis_agent.txt"
 CLAUDE_MODEL = "claude-sonnet-4-6"
@@ -69,11 +69,21 @@ async def run(context: AgentContext, settings: Settings) -> RecommendationSet:
     return _merge_consensus(recs_a, recs_b)
 
 
+_SEVERE_PAIRS = {
+    frozenset({Action.BUY, Action.AVOID}),
+}
+_AVOID_PAIRS = {
+    frozenset({Action.WAIT, Action.AVOID}),
+}
+
+
 def _merge_consensus(primary: RecommendationSet, secondary: RecommendationSet) -> RecommendationSet:
     """
-    Compara ticker por ticker.
-    Acuerdo → mantiene recomendación original.
-    Desacuerdo → WAIT conservador con confidence LOW.
+    Compara ticker por ticker con lógica graduada:
+      BUY vs AVOID → AVOID  (discrepancia grave — prima la cautela)
+      WAIT vs AVOID → AVOID
+      BUY vs WAIT  → WAIT   (desacuerdo menor — conservador)
+      Acuerdo      → mantiene recomendación original
     """
     secondary_map = {r.ticker: r for r in secondary.recommendations}
     merged = []
@@ -84,11 +94,21 @@ def _merge_consensus(primary: RecommendationSet, secondary: RecommendationSet) -
         sec = secondary_map.get(rec.ticker)
         if sec and sec.action != rec.action:
             disagreements += 1
+            pair = frozenset({rec.action, sec.action})
+            if pair in _SEVERE_PAIRS:
+                resolved_action = Action.AVOID
+                label = "[Discrepancia grave — modelos opuestos]"
+            elif pair in _AVOID_PAIRS:
+                resolved_action = Action.AVOID
+                label = "[Desacuerdo — postura conservadora]"
+            else:
+                resolved_action = Action.WAIT
+                label = "[Modelos en desacuerdo — postura conservadora]"
             merged.append(rec.model_copy(update={
-                "action": Action.WAIT,
-                "confidence": "LOW",
+                "action": resolved_action,
+                "confidence": Confidence.LOW,
                 "reasoning": (
-                    f"[Modelos en desacuerdo — postura conservadora] "
+                    f"{label} "
                     f"Modelo 1: {rec.action.value}. Modelo 2: {sec.action.value}. "
                     f"{rec.reasoning[:200]}"
                 ),
@@ -195,7 +215,7 @@ def _parse(text: str) -> RecommendationSet | None:
                     ticker=r["ticker"],
                     action=r["action"],
                     wait_days=r.get("wait_days"),
-                    confidence=r.get("confidence", "LOW"),
+                    confidence=Confidence(r.get("confidence", "LOW")),
                     reasoning=r.get("reasoning", "Sin detalle"),
                     sources=r.get("sources", []),
                 ))
