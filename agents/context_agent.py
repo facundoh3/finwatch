@@ -154,6 +154,9 @@ async def _fetch_all_news(tickers: list[str], settings: Settings, hours_back: in
     return unique
 
 
+_OPENROUTER_FILTER_MODEL = "google/gemini-flash-1.5"  # rápido, barato, bueno para filtrado
+
+
 async def _filter_news(
     news_items: list[NewsItem],
     tickers: list[str],
@@ -161,7 +164,10 @@ async def _filter_news(
     settings: Settings,
 ) -> list[NewsItem]:
     """
-    Groq primero (gratis, rápido). Fallback: OpenRouter race. Si nada, tier A directo.
+    Orden: OpenRouter pago (gemini-flash, rápido y sin rate-limit)
+           → Groq llama-3.1-8b (fallback gratuito)
+           → OpenRouter modelos free (último recurso)
+    Si nada responde → tier A directo.
     """
     if not news_items:
         return []
@@ -178,7 +184,25 @@ async def _filter_news(
 
     content: str | None = None
 
-    if settings.groq_api_key:
+    # 1. OpenRouter pago (gemini-flash) — sin rate-limit, consume los créditos de OR
+    if settings.openrouter_api_key:
+        try:
+            client = build_openrouter_client(settings.openrouter_api_key)
+            response = await asyncio.wait_for(
+                client.chat.completions.create(
+                    model=_OPENROUTER_FILTER_MODEL,
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=4000,
+                ),
+                timeout=15.0,
+            )
+            content = response.choices[0].message.content
+            logger.info(f"Contexto: filtrado con OpenRouter {_OPENROUTER_FILTER_MODEL}")
+        except Exception as e:
+            logger.warning(f"OpenRouter filtrado error: {e}")
+
+    # 2. Groq fallback — gratuito pero con rate limit
+    if not content and settings.groq_api_key:
         try:
             client = build_groq_client(settings.groq_api_key)
             response = await asyncio.wait_for(
@@ -190,10 +214,11 @@ async def _filter_news(
                 timeout=15.0,
             )
             content = response.choices[0].message.content
-            logger.info("Contexto: filtrado con Groq llama-3.1-8b-instant")
+            logger.info("Contexto: filtrado con Groq llama-3.1-8b-instant (fallback)")
         except Exception as e:
             logger.warning(f"Groq contexto error: {e}")
 
+    # 3. OpenRouter modelos gratuitos — último recurso
     if not content and settings.openrouter_api_key:
         client = build_openrouter_client(settings.openrouter_api_key)
         models = await get_free_models(settings.openrouter_api_key)

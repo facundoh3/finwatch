@@ -16,7 +16,7 @@ from core.models.recommendation import Action, AgentContext, Recommendation, Rec
 PROMPT_PATH = Path(__file__).parent.parent / "config" / "prompts" / "analysis_agent.txt"
 CLAUDE_MODEL = "claude-sonnet-4-6"
 GROQ_MODEL = "llama-3.3-70b-versatile"
-DEEPSEEK_MODEL = "deepseek-reasoner"
+DEEPSEEK_MODEL = "deepseek-chat"  # V3: muy bueno, 4x más barato que R1 (reasoner)
 
 
 async def run(context: AgentContext, settings: Settings) -> RecommendationSet:
