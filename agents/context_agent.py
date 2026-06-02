@@ -21,8 +21,8 @@ from core.services.rss_client import fetch_all_tier_a_news
 
 PROMPT_PATH = Path(__file__).parent.parent / "config" / "prompts" / "context_agent.txt"
 
-
-_NEWS_CACHE_TTL = 1440  # minutos (24hs) — se invalida solo cuando cambia la fecha de cierre
+_NEWS_CACHE_TTL = 1440      # minutos — días de semana, se invalida al cambiar cierre NYSE
+_WEEKEND_CACHE_TTL = 360    # minutos — fin de semana, se refresca cada 6h
 
 
 async def run(
@@ -30,26 +30,40 @@ async def run(
     tickers_byma: list[str],
     settings: Settings,
     cache: CacheService | None = None,
+    news_hours_back: int | None = None,
 ) -> AgentContext:
+    from datetime import date
     all_tickers = sorted(set(tickers_usa + tickers_byma))
     close_date = get_last_close_date()
-    news_key = f"news_{close_date}_{'_'.join(all_tickers)}"
+    today = date.today()
+    is_weekend = today.weekday() >= 5
+    actual_hours = news_hours_back or settings.news_hours_back
 
-    logger.info(f"Fetcheando datos para: {all_tickers} | cierre: {close_date}")
+    if is_weekend:
+        # Fin de semana: caché por día real (no por cierre NYSE) y ventana de 72h para capturar todo
+        news_key = f"news_weekend_{today.isoformat()}_{'_'.join(all_tickers)}"
+        cache_ttl = _WEEKEND_CACHE_TTL
+        actual_hours = max(actual_hours, 72)
+        logger.info(f"Fin de semana: ventana de noticias ampliada a {actual_hours}h")
+    else:
+        news_key = f"news_{close_date}_{'_'.join(all_tickers)}"
+        cache_ttl = _NEWS_CACHE_TTL
+
+    logger.info(f"Fetcheando datos para: {all_tickers} | cierre: {close_date} | ventana: {actual_hours}h")
 
     # Precios: siempre frescos
     market_overview = await _fetch_market_data(tickers_usa, tickers_byma, settings)
 
-    # Noticias: cacheadas por día de cierre — estables durante toda la sesión
+    # Noticias: cacheadas por cierre NYSE (días hábiles) o por día (fin de semana)
     filtered_news: list[NewsItem] | None = None
     if cache:
-        cached_news = cache.get(news_key, override_ttl_minutes=_NEWS_CACHE_TTL)
+        cached_news = cache.get(news_key, override_ttl_minutes=cache_ttl)
         if cached_news:
             filtered_news = [NewsItem.model_validate(n) for n in cached_news]
-            logger.info(f"Noticias: cache del cierre {close_date} ({len(filtered_news)} items)")
+            logger.info(f"Noticias: cache {'fin de semana' if is_weekend else f'cierre {close_date}'} ({len(filtered_news)} items)")
 
     if filtered_news is None:
-        news_items = await _fetch_all_news(tickers_usa, settings)
+        news_items = await _fetch_all_news(tickers_usa, settings, actual_hours)
         filtered_news, _ = await asyncio.gather(
             _filter_news(news_items, all_tickers, market_overview, settings),
             _enrich_with_technicals(market_overview, tickers_usa),
@@ -62,7 +76,7 @@ async def run(
     news_collection = NewsCollection(
         items=filtered_news,
         tickers_queried=all_tickers,
-        hours_back=settings.news_hours_back,
+        hours_back=actual_hours,
     )
 
     return AgentContext(
@@ -99,21 +113,26 @@ async def _fetch_market_data(
                     snap = next(s for s in byma_snapshots if s.ticker == t.upper())
                     snapshots.append(snap)
         except Exception as e:
-            logger.warning(f"Error BYMA: {e}")
+            logger.warning(f"Error BYMA: {e} — usando yfinance .BA como fallback")
+            byma_fallback = await _fetch_yfinance_byma(tickers_byma)
+            snapshots.extend(byma_fallback)
+            if byma_fallback:
+                logger.info(f"BYMA fallback: {len(byma_fallback)} tickers via yfinance .BA")
 
     return MarketOverview(snapshots=snapshots)
 
 
-async def _fetch_all_news(tickers: list[str], settings: Settings) -> list[NewsItem]:
+async def _fetch_all_news(tickers: list[str], settings: Settings, hours_back: int | None = None) -> list[NewsItem]:
+    window = hours_back or settings.news_hours_back
     tasks = [fetch_all_tier_a_news()]
 
     if settings.marketaux_api_key:
         maux = MarketauxClient(settings.marketaux_api_key)
-        tasks.append(maux.get_news(tickers, settings.news_hours_back))
+        tasks.append(maux.get_news(tickers, window))
 
     if settings.finnhub_api_key:
         finnhub = FinnhubClient(settings.finnhub_api_key)
-        tasks.extend([finnhub.get_company_news(t, settings.news_hours_back) for t in tickers[:5]])
+        tasks.extend([finnhub.get_company_news(t, window) for t in tickers[:5]])
         tasks.append(finnhub.get_market_news())
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -135,6 +154,9 @@ async def _fetch_all_news(tickers: list[str], settings: Settings) -> list[NewsIt
     return unique
 
 
+_OPENROUTER_FILTER_MODEL = "google/gemini-flash-1.5"  # rápido, barato, bueno para filtrado
+
+
 async def _filter_news(
     news_items: list[NewsItem],
     tickers: list[str],
@@ -142,7 +164,10 @@ async def _filter_news(
     settings: Settings,
 ) -> list[NewsItem]:
     """
-    Groq primero (gratis, rápido). Fallback: OpenRouter race. Si nada, tier A directo.
+    Orden: OpenRouter pago (gemini-flash, rápido y sin rate-limit)
+           → Groq llama-3.1-8b (fallback gratuito)
+           → OpenRouter modelos free (último recurso)
+    Si nada responde → tier A directo.
     """
     if not news_items:
         return []
@@ -159,7 +184,25 @@ async def _filter_news(
 
     content: str | None = None
 
-    if settings.groq_api_key:
+    # 1. OpenRouter pago (gemini-flash) — sin rate-limit, consume los créditos de OR
+    if settings.openrouter_api_key:
+        try:
+            client = build_openrouter_client(settings.openrouter_api_key)
+            response = await asyncio.wait_for(
+                client.chat.completions.create(
+                    model=_OPENROUTER_FILTER_MODEL,
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=4000,
+                ),
+                timeout=15.0,
+            )
+            content = response.choices[0].message.content
+            logger.info(f"Contexto: filtrado con OpenRouter {_OPENROUTER_FILTER_MODEL}")
+        except Exception as e:
+            logger.warning(f"OpenRouter filtrado error: {e}")
+
+    # 2. Groq fallback — gratuito pero con rate limit
+    if not content and settings.groq_api_key:
         try:
             client = build_groq_client(settings.groq_api_key)
             response = await asyncio.wait_for(
@@ -171,10 +214,11 @@ async def _filter_news(
                 timeout=15.0,
             )
             content = response.choices[0].message.content
-            logger.info("Contexto: filtrado con Groq llama-3.1-8b-instant")
+            logger.info("Contexto: filtrado con Groq llama-3.1-8b-instant (fallback)")
         except Exception as e:
             logger.warning(f"Groq contexto error: {e}")
 
+    # 3. OpenRouter modelos gratuitos — último recurso
     if not content and settings.openrouter_api_key:
         client = build_openrouter_client(settings.openrouter_api_key)
         models = await get_free_models(settings.openrouter_api_key)
@@ -227,6 +271,43 @@ async def _enrich_with_technicals(market: MarketOverview, tickers_usa: list[str]
         logger.warning("Enriquecimiento técnico: timeout de 12s")
     except Exception as e:
         logger.warning(f"Enriquecimiento técnico fallido: {e}")
+
+
+async def _fetch_yfinance_byma(tickers: list[str]) -> list[MarketSnapshot]:
+    """Obtiene precios BYMA usando yfinance con sufijo .BA. Retorna snapshots con el ticker original."""
+    loop = asyncio.get_running_loop()
+    results = await asyncio.gather(
+        *[loop.run_in_executor(None, _get_byma_snapshot_sync, t) for t in tickers],
+        return_exceptions=True,
+    )
+    return [r for r in results if isinstance(r, MarketSnapshot)]
+
+
+def _get_byma_snapshot_sync(ticker: str) -> MarketSnapshot | None:
+    try:
+        import yfinance as yf
+        t = yf.Ticker(f"{ticker}.BA")
+        info = t.fast_info
+        last = getattr(info, "last_price", None) or getattr(info, "regularMarketPrice", 0)
+        prev = getattr(info, "previous_close", last) or last
+        if not last or last <= 0:
+            return None
+        return MarketSnapshot(
+            ticker=ticker,  # sin .BA — lo mostramos con nombre original
+            current_price=last,
+            previous_close=prev,
+            change_amount=last - prev,
+            change_pct=((last - prev) / prev * 100) if prev else 0.0,
+            high_today=getattr(info, "day_high", last) or last,
+            low_today=getattr(info, "day_low", last) or last,
+            open_price=getattr(info, "open", prev) or prev,
+            volume=int(getattr(info, "three_month_average_volume", 0) or 0),
+            high_52w=getattr(info, "year_high", None),
+            low_52w=getattr(info, "year_low", None),
+        )
+    except Exception as e:
+        logger.debug(f"yfinance BYMA {ticker}.BA: {e}")
+        return None
 
 
 async def _fetch_yfinance(tickers: list[str]) -> list[MarketSnapshot]:

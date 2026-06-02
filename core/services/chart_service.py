@@ -8,30 +8,36 @@ from loguru import logger
 def get_price_history(ticker: str, days: int = 60, interval: str = "1d") -> pd.DataFrame | None:
     """
     Descarga historial OHLCV y calcula SMA20/SMA50.
-    interval="1h"  → velas horarias, últimos 5 días de mercado
-    interval="1wk" → velas semanales, últimos 6 meses
-    interval="1d"  → velas diarias, usa `days`
+    Para tickers argentinos (YPFD, GGAL, etc.) intenta con sufijo .BA si el original falla.
     """
-    try:
-        import yfinance as yf
-        if interval == "1h":
-            period = "5d"
-        elif interval == "1wk":
-            period = "6mo"
-        else:
-            period = f"{days}d"
-        df = yf.Ticker(ticker).history(period=period, interval=interval)
-        if df.empty:
+    def _fetch(symbol: str) -> pd.DataFrame | None:
+        try:
+            import yfinance as yf
+            if interval == "1h":
+                period = "5d"
+            elif interval == "1wk":
+                period = "6mo"
+            else:
+                period = f"{days}d"
+            df = yf.Ticker(symbol).history(period=period, interval=interval)
+            if df.empty:
+                return None
+            df = df[["Open", "High", "Low", "Close", "Volume"]].copy()
+            if df.index.tz is not None:
+                df.index = df.index.tz_localize(None)
+            df["SMA20"] = df["Close"].rolling(20).mean()
+            df["SMA50"] = df["Close"].rolling(50).mean()
+            return df
+        except Exception as e:
+            logger.debug(f"chart_service: {symbol}: {e}")
             return None
-        df = df[["Open", "High", "Low", "Close", "Volume"]].copy()
-        if df.index.tz is not None:
-            df.index = df.index.tz_localize(None)
-        df["SMA20"] = df["Close"].rolling(20).mean()
-        df["SMA50"] = df["Close"].rolling(50).mean()
-        return df
-    except Exception as e:
-        logger.debug(f"chart_service: {ticker}: {e}")
-        return None
+
+    df = _fetch(ticker)
+    if df is None and not ticker.endswith(".BA"):
+        df = _fetch(f"{ticker}.BA")
+        if df is not None:
+            logger.debug(f"chart_service: {ticker} → {ticker}.BA (fallback BYMA)")
+    return df
 
 
 async def get_histories(tickers: list[str], days: int = 60) -> dict[str, pd.DataFrame]:

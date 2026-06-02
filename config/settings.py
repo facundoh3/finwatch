@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     openrouter_api_key: str = ""
     groq_api_key: str = ""
+    deepseek_api_key: str = ""
     alpha_vantage_api_key: str = ""
 
     cache_ttl_minutes: int = 30
