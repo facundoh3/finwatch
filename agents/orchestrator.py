@@ -18,6 +18,7 @@ from core.services.cache_service import CacheService
 
 _cache: CacheService | None = None
 _ANALYSIS_FILE = Path(__file__).parent.parent / "config" / "last_analysis.json"
+_CI_ANALYSIS_FILE = Path(__file__).parent.parent / "config" / "ci_analysis.json"
 _NEWS_HOURS_MIN = 24
 _NEWS_HOURS_MAX = 96
 
@@ -43,19 +44,23 @@ def _load_tickers() -> tuple[list[str], list[str]]:
 def _calc_dynamic_news_hours() -> int:
     """
     Calcula cuántas horas de noticias pedir basándose en el tiempo desde el último análisis.
-    Si hay un gap de días (ej: lunes→miércoles), pide más horas para no perder noticias.
+    Prioridad: last_analysis.json (análisis manual) → ci_analysis.json (CI automático) → default 24h.
+    Esto garantiza que el lunes por la mañana, tras un git pull, se incluyan noticias del fin de semana.
     """
     try:
-        if not _ANALYSIS_FILE.exists():
+        # Preferir el análisis manual; si no existe, usar el del CI (viene en el repo via git pull)
+        ref_file = _ANALYSIS_FILE if _ANALYSIS_FILE.exists() else _CI_ANALYSIS_FILE
+        if not ref_file.exists():
             return _NEWS_HOURS_MIN
-        data = json.loads(_ANALYSIS_FILE.read_text())
+        data = json.loads(ref_file.read_text())
         saved_at = datetime.fromisoformat(data["saved_at"])
         hours_since = (datetime.now() - saved_at).total_seconds() / 3600
         # Agrega 4h de buffer y limita entre 24 y 96h
         dynamic = int(hours_since) + 4
         result = max(_NEWS_HOURS_MIN, min(dynamic, _NEWS_HOURS_MAX))
+        source = "análisis manual" if ref_file == _ANALYSIS_FILE else "CI automático"
         if result > _NEWS_HOURS_MIN:
-            logger.info(f"News window dinámica: {result}h (último análisis hace {hours_since:.0f}h)")
+            logger.info(f"News window dinámica: {result}h (último {source} hace {hours_since:.0f}h)")
         return result
     except Exception:
         return _NEWS_HOURS_MIN
