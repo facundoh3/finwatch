@@ -154,7 +154,28 @@ async def _fetch_all_news(tickers: list[str], settings: Settings, hours_back: in
     return unique
 
 
-_OPENROUTER_FILTER_MODEL = "google/gemini-flash-1.5"  # rápido, barato, bueno para filtrado
+# gemini-2.0-flash: reemplaza gemini-flash-1.5 (removido de OR en 2026)
+_OPENROUTER_FILTER_MODEL = "google/gemini-2.0-flash-001"
+
+# Límites de noticias por proveedor según capacidad de tokens
+_MAX_NEWS_OR_PAID = 40    # OpenRouter pago: sin límite práctico
+_MAX_NEWS_GROQ = 20       # Groq llama-3.1-8b: límite 6000 TPM → ~20 items seguros
+_MAX_NEWS_OR_FREE = 15    # OpenRouter free: modelos pequeños, conservador
+
+
+def _build_filter_prompt(
+    news_items: list[NewsItem], tickers: list[str], market: MarketOverview, max_items: int
+) -> str:
+    raw_news_text = "\n".join(
+        f"- [{n.source_tier}] {n.headline[:80]} | {n.source} | {n.url}"
+        for n in news_items[:max_items]
+    )
+    return (
+        PROMPT_PATH.read_text()
+        .replace("{tickers}", ", ".join(tickers))
+        .replace("{raw_news}", raw_news_text)
+        .replace("{market_data}", market.to_context_block())
+    )
 
 
 async def _filter_news(
@@ -164,28 +185,19 @@ async def _filter_news(
     settings: Settings,
 ) -> list[NewsItem]:
     """
-    Orden: OpenRouter pago (gemini-flash, rápido y sin rate-limit)
-           → Groq llama-3.1-8b (fallback gratuito)
-           → OpenRouter modelos free (último recurso)
+    Orden: OpenRouter pago (gemini-2.0-flash, 40 items)
+           → Groq llama-3.1-8b (20 items — bajo TPM limit de 6000)
+           → OpenRouter modelos free (15 items — último recurso)
     Si nada responde → tier A directo.
     """
     if not news_items:
         return []
 
-    raw_news_text = "\n".join(
-        f"- [{n.source_tier}] {n.headline[:80]} | {n.source} | {n.url}" for n in news_items[:40]
-    )
-    prompt = (
-        PROMPT_PATH.read_text()
-        .replace("{tickers}", ", ".join(tickers))
-        .replace("{raw_news}", raw_news_text)
-        .replace("{market_data}", market.to_context_block())
-    )
-
     content: str | None = None
 
-    # 1. OpenRouter pago (gemini-flash) — sin rate-limit, consume los créditos de OR
+    # 1. OpenRouter pago (gemini-2.0-flash) — sin rate-limit, consume créditos de OR
     if settings.openrouter_api_key:
+        prompt = _build_filter_prompt(news_items, tickers, market, _MAX_NEWS_OR_PAID)
         try:
             client = build_openrouter_client(settings.openrouter_api_key)
             response = await asyncio.wait_for(
@@ -201,8 +213,9 @@ async def _filter_news(
         except Exception as e:
             logger.warning(f"OpenRouter filtrado error: {e}")
 
-    # 2. Groq fallback — gratuito pero con rate limit
+    # 2. Groq fallback — 20 items para no exceder 6000 TPM de llama-3.1-8b-instant
     if not content and settings.groq_api_key:
+        prompt = _build_filter_prompt(news_items, tickers, market, _MAX_NEWS_GROQ)
         try:
             client = build_groq_client(settings.groq_api_key)
             response = await asyncio.wait_for(
@@ -220,6 +233,7 @@ async def _filter_news(
 
     # 3. OpenRouter modelos gratuitos — último recurso
     if not content and settings.openrouter_api_key:
+        prompt = _build_filter_prompt(news_items, tickers, market, _MAX_NEWS_OR_FREE)
         client = build_openrouter_client(settings.openrouter_api_key)
         models = await get_free_models(settings.openrouter_api_key)
         content = await race_models(
