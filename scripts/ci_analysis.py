@@ -23,11 +23,11 @@ def _load_tickers() -> tuple[list[str], list[str]]:
         return ["SPY", "QQQ", "GLD", "AAPL", "NVDA", "TSLA"], ["YPFD", "GGAL"]
     data = yaml.safe_load(tickers_path.read_text())
     tickers_usa = (
-        data.get("indices_usa", [])[:3] +
-        data.get("commodities", [])[:2] +
-        data.get("acciones_usa", [])[:5]
+        data.get("indices_usa", []) +
+        data.get("commodities", []) +
+        data.get("acciones_usa", [])
     )
-    tickers_byma = data.get("tickers_byma", [])[:4]
+    tickers_byma = data.get("tickers_byma", [])
     return tickers_usa, tickers_byma
 
 
