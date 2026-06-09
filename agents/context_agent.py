@@ -217,7 +217,7 @@ async def _filter_news(
 
     content: str | None = None
 
-    # 1. OpenRouter pago (gemini-2.0-flash) — sin rate-limit, consume créditos de OR
+    # 1. OpenRouter pago (gpt-4o-mini) — sin rate-limit, consume créditos de OR
     if settings.openrouter_api_key:
         prompt = _build_filter_prompt(news_items, tickers, market, _MAX_NEWS_OR_PAID)
         try:
@@ -228,12 +228,14 @@ async def _filter_news(
                     messages=[{"role": "user", "content": prompt}],
                     max_tokens=4000,
                 ),
-                timeout=15.0,
+                timeout=30.0,
             )
             content = response.choices[0].message.content
             logger.info(f"Contexto: filtrado con OpenRouter {_OPENROUTER_FILTER_MODEL}")
+        except asyncio.TimeoutError:
+            logger.warning(f"OpenRouter filtrado: timeout de 30s con {_OPENROUTER_FILTER_MODEL}")
         except Exception as e:
-            logger.warning(f"OpenRouter filtrado error: {e}")
+            logger.warning(f"OpenRouter filtrado error ({type(e).__name__}): {e}")
 
     # 2. Groq fallback — 20 items para no exceder 6000 TPM de llama-3.1-8b-instant
     if not content and settings.groq_api_key:
@@ -270,17 +272,26 @@ async def _filter_news(
         try:
             result = extract_json(content)
             filtered = result.get("filtered_news", [])
-            logger.info(f"Contexto: {len(filtered)}/{len(news_items)} noticias seleccionadas")
-            url_to_original = {n.url: n for n in news_items}
+
+            def _norm_url(url: str) -> str:
+                return url.rstrip("/").replace("https://", "http://").lower().strip()
+
+            url_to_original = {_norm_url(n.url): n for n in news_items}
+            # Fallback por headline (primeros 70 chars) cuando la URL cambia
+            headline_to_original = {n.headline[:70]: n for n in news_items}
+
             items = []
             for f in filtered:
-                url = f.get("url", "")
-                if url in url_to_original:
-                    original = url_to_original[url]
+                url = _norm_url(f.get("url", ""))
+                headline = f.get("headline", "")[:70]
+                original = url_to_original.get(url) or headline_to_original.get(headline)
+                if original:
                     items.append(original.model_copy(update={
                         "sentiment_score": f.get("sentiment_score", original.sentiment_score),
                         "related_tickers": f.get("related_tickers", original.related_tickers),
                     }))
+
+            logger.info(f"Contexto: {len(items)}/{len(news_items)} noticias seleccionadas (LLM propuso {len(filtered)})")
             if items:
                 return items
         except Exception as e:
