@@ -12,11 +12,17 @@ class Action(str, Enum):
     WAIT = "WAIT"
     AVOID = "AVOID"
 
+    def __str__(self) -> str:
+        return self.value
+
 
 class Confidence(str, Enum):
     HIGH = "HIGH"
     MEDIUM = "MEDIUM"
     LOW = "LOW"
+
+    def __str__(self) -> str:
+        return self.value
 
 
 class Recommendation(BaseModel):
@@ -64,12 +70,14 @@ class Recommendation(BaseModel):
         """Para renderizar en Streamlit sin lógica en el frontend."""
         action_emoji = {"BUY": "✅", "WAIT": "⏳", "AVOID": "❌"}
         confidence_color = {"HIGH": "green", "MEDIUM": "orange", "LOW": "red"}
+        av = self.action.value
+        cv = self.confidence.value
         return {
             "ticker": self.ticker,
-            "action_label": f"{action_emoji.get(self.action, '')} {self.action}",
+            "action_label": f"{action_emoji.get(av, '')} {av}",
             "wait_info": f"Esperar {self.wait_days} días" if self.wait_days else None,
-            "confidence_color": confidence_color.get(self.confidence, "gray"),
-            "confidence_label": self.confidence,
+            "confidence_color": confidence_color.get(cv, "gray"),
+            "confidence_label": cv,
             "reasoning": self.reasoning,
             "sources": self.sources,
             "generated_at": self.generated_at.strftime("%d/%m/%Y %H:%M"),

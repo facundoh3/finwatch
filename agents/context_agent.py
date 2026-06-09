@@ -123,6 +123,7 @@ async def _fetch_market_data(
 
 
 async def _fetch_all_news(tickers: list[str], settings: Settings, hours_back: int | None = None) -> list[NewsItem]:
+    from datetime import datetime, timedelta
     window = hours_back or settings.news_hours_back
     tasks = [fetch_all_tier_a_news()]
 
@@ -150,12 +151,33 @@ async def _fetch_all_news(tickers: list[str], settings: Settings, hours_back: in
             seen_urls.add(item.url)
             unique.append(item)
 
-    logger.info(f"Noticias únicas antes de filtrar: {len(unique)}")
-    return unique
+    # Pre-filtrar artículos viejos que se cuelan por RSS (ej: artículos "destacados" de hace meses)
+    # Se agrega 24h de buffer para no descartar artículos del límite de la ventana
+    cutoff = datetime.utcnow() - timedelta(hours=window + 24)
+
+    def _pub_naive(item: NewsItem) -> datetime:
+        try:
+            pub = item.published_at
+            if pub is None:
+                return datetime.utcnow()  # sin fecha → asumir reciente
+            return pub.replace(tzinfo=None) if getattr(pub, "tzinfo", None) else pub
+        except Exception:
+            return datetime.utcnow()
+
+    fresh = [n for n in unique if _pub_naive(n) >= cutoff]
+    old_count = len(unique) - len(fresh)
+    if old_count:
+        logger.info(f"Noticias descartadas por antigüedad: {old_count} artículos fuera de ventana de {window+24}h")
+
+    # Ordenar por recencia (más reciente primero) para que el AI vea lo más nuevo
+    result = sorted(fresh if len(fresh) >= 5 else unique, key=_pub_naive, reverse=True)
+
+    logger.info(f"Noticias únicas antes de filtrar: {len(result)}")
+    return result
 
 
-# gemini-2.0-flash: reemplaza gemini-flash-1.5 (removido de OR en 2026)
-_OPENROUTER_FILTER_MODEL = "google/gemini-2.0-flash-001"
+# gpt-4o-mini: barato (~$0.001/run), siempre disponible en OpenRouter
+_OPENROUTER_FILTER_MODEL = "openai/gpt-4o-mini"
 
 # Límites de noticias por proveedor según capacidad de tokens
 _MAX_NEWS_OR_PAID = 40    # OpenRouter pago: sin límite práctico
