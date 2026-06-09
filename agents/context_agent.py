@@ -154,8 +154,8 @@ async def _fetch_all_news(tickers: list[str], settings: Settings, hours_back: in
     return unique
 
 
-# gemini-2.0-flash: reemplaza gemini-flash-1.5 (removido de OR en 2026)
-_OPENROUTER_FILTER_MODEL = "google/gemini-2.0-flash-001"
+# gpt-4o-mini: barato (~$0.001/run), siempre disponible en OpenRouter
+_OPENROUTER_FILTER_MODEL = "openai/gpt-4o-mini"
 
 # Límites de noticias por proveedor según capacidad de tokens
 _MAX_NEWS_OR_PAID = 40    # OpenRouter pago: sin límite práctico
