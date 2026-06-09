@@ -96,33 +96,26 @@ def _run_async(coro):
     return asyncio.run(coro)
 
 
-def _sidebar(cfg: dict) -> tuple[list[str], list[str], bool]:
+def _sidebar(cfg: dict) -> tuple[list[str], bool]:
     st.sidebar.title("📈 finwatch")
     st.sidebar.caption("Asistente personal de finanzas")
     st.sidebar.divider()
 
-    st.sidebar.subheader("🇺🇸 Índices y ETFs")
-    all_indices = cfg.get("indices_usa", []) + cfg.get("commodities", []) + cfg.get("sectores_usa", [])
-    tickers_etf = st.sidebar.multiselect(
-        "Índices / Sectores / Commodities",
-        options=all_indices,
-        default=cfg.get("indices_usa", [])[:3] + cfg.get("commodities", [])[:2],
-    )
-
-    st.sidebar.subheader("🏢 Acciones USA")
-    acciones_usa = cfg.get("acciones_usa", [])
-    tickers_acciones = st.sidebar.multiselect(
-        "Acciones individuales",
-        options=acciones_usa + ["META", "GOOGL", "JPM", "BAC", "AMD"],
-        default=acciones_usa[:3],
-    )
-
-    st.sidebar.subheader("🇦🇷 Argentina")
-    byma_opts = cfg.get("tickers_byma", [])
-    tickers_byma = st.sidebar.multiselect(
-        "BYMA / ADRs",
-        options=byma_opts + cfg.get("tickers_arg_adr", []),
-        default=byma_opts[:3],
+    # Filtro de vista (no controla el análisis — siempre se analizan todos)
+    all_tickers = sorted(set(
+        cfg.get("indices_usa", []) +
+        cfg.get("commodities", []) +
+        cfg.get("sectores_usa", []) +
+        cfg.get("acciones_usa", []) +
+        cfg.get("tickers_arg_adr", []) +
+        cfg.get("tickers_byma", [])
+    ))
+    view_filter = st.sidebar.multiselect(
+        "🔍 Filtrar tickers",
+        options=all_tickers,
+        default=[],
+        placeholder="Mostrar todos",
+        help="Solo filtra lo que se muestra — el análisis siempre corre sobre todos los tickers.",
     )
 
     st.sidebar.divider()
@@ -140,8 +133,7 @@ def _sidebar(cfg: dict) -> tuple[list[str], list[str], bool]:
         _consensus = "IA"
     st.sidebar.caption(f"IA: {_consensus} · fallback Claude")
 
-    tickers_usa = tickers_etf + tickers_acciones
-    return tickers_usa, tickers_byma, force_refresh
+    return view_filter, force_refresh
 
 
 def _check_settings():
@@ -253,7 +245,17 @@ def _render_market_clock():
 
 def main():
     cfg = _load_tickers_config()
-    tickers_usa, tickers_byma, force_refresh = _sidebar(cfg)
+    view_filter, force_refresh = _sidebar(cfg)
+
+    # Todos los tickers del yaml — el análisis siempre corre sobre todos
+    tickers_usa = (
+        cfg.get("indices_usa", []) +
+        cfg.get("commodities", []) +
+        cfg.get("sectores_usa", []) +
+        cfg.get("acciones_usa", []) +
+        cfg.get("tickers_arg_adr", [])
+    )
+    tickers_byma = cfg.get("tickers_byma", [])
 
     if "analysis_result" not in st.session_state:
         loaded = _load_last_analysis()
@@ -272,11 +274,6 @@ def main():
                 st.markdown(issue)
             st.info("Editá `.env` con tus API keys y reiniciá la app.")
 
-    if not tickers_usa and not tickers_byma:
-        st.info("Seleccioná tickers en la barra lateral y hacé clic en **Analizar ahora**.")
-        _show_welcome()
-        return
-
     if force_refresh:
         with st.spinner("Analizando mercados... (~30 segundos)"):
             try:
@@ -293,11 +290,9 @@ def main():
                 st.session_state["analysis_result"] = (ctx, recs)
                 st.session_state["analysis_age"] = datetime.now()
                 _save_last_analysis(ctx, recs)
-                # Tracker: resolver pendientes + guardar nuevas
                 current_prices = {s.ticker: s.current_price for s in ctx.market.snapshots}
                 resolve_pending(current_prices)
                 save_recommendations(recs.recommendations, ctx.market.snapshots)
-                # Diff respecto al análisis anterior
                 if old_recs and old_recs.recommendations:
                     st.session_state["analysis_diff"] = _compute_diff(old_recs, recs)
                 else:
@@ -308,10 +303,22 @@ def main():
 
     if "analysis_result" not in st.session_state:
         _show_welcome()
-        st.info("Seleccioná tus tickers y hacé clic en **🔄 Analizar ahora** para comenzar.")
+        st.info("Hacé clic en **🔄 Analizar ahora** para comenzar.")
         return
 
     ctx, recs = st.session_state["analysis_result"]
+
+    # Aplicar filtro de vista sin tocar los datos del análisis
+    from core.models.recommendation import RecommendationSet
+    if view_filter:
+        view_set = set(view_filter)
+        displayed_recs = RecommendationSet(
+            recommendations=[r for r in recs.recommendations if r.ticker in view_set],
+            market_summary=recs.market_summary,
+            generated_at=recs.generated_at,
+        )
+    else:
+        displayed_recs = recs
 
     if "analysis_age" in st.session_state:
         age = datetime.now() - st.session_state["analysis_age"]
@@ -326,9 +333,9 @@ def main():
         st.info(f"**Panorama del mercado hoy:** {recs.market_summary}")
 
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("✅ Comprar", len(recs.by_action("BUY")))
-    col2.metric("⏳ Esperar", len(recs.by_action("WAIT")))
-    col3.metric("❌ Evitar", len(recs.by_action("AVOID")))
+    col1.metric("✅ Comprar", len(displayed_recs.by_action("BUY")))
+    col2.metric("⏳ Esperar", len(displayed_recs.by_action("WAIT")))
+    col3.metric("❌ Evitar", len(displayed_recs.by_action("AVOID")))
     col4.metric("📰 Noticias", len(ctx.news.items))
 
     st.divider()
@@ -336,9 +343,9 @@ def main():
     tab1, tab2, tab3, tab4 = st.tabs(["💡 Recomendaciones", "📊 Precios", "📰 Noticias", "💼 Mi Portafolio"])
 
     with tab1:
-        _render_recomendaciones(recs, ctx)
+        _render_recomendaciones(displayed_recs, ctx)
     with tab2:
-        _render_precios(ctx, recs)
+        _render_precios(ctx, displayed_recs)
     with tab3:
         _render_noticias(ctx)
     with tab4:
