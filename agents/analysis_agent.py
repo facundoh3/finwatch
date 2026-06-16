@@ -209,10 +209,17 @@ def _parse(text: str) -> RecommendationSet | None:
     try:
         data = extract_json(text)
         recommendations = []
+        seen_tickers: set[str] = set()
         for r in data.get("recommendations", []):
+            ticker = r.get("ticker", "")
+            if not ticker or ticker in seen_tickers:
+                if ticker in seen_tickers:
+                    logger.debug(f"Ticker duplicado en respuesta del modelo, descartado: {ticker}")
+                continue
+            seen_tickers.add(ticker)
             try:
                 recommendations.append(Recommendation(
-                    ticker=r["ticker"],
+                    ticker=ticker,
                     action=r["action"],
                     wait_days=r.get("wait_days"),
                     confidence=Confidence(r.get("confidence", "LOW")),
@@ -220,7 +227,7 @@ def _parse(text: str) -> RecommendationSet | None:
                     sources=r.get("sources", []),
                 ))
             except Exception as e:
-                logger.debug(f"Recomendación descartada ({r.get('ticker')}): {e}")
+                logger.debug(f"Recomendación descartada ({ticker}): {e}")
         return RecommendationSet(
             recommendations=recommendations,
             market_summary=data.get("market_summary", ""),
