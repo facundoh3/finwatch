@@ -36,7 +36,6 @@ tickers_arg_adr:
   - BBAR      # BBVA Argentina
   - LOMA      # Loma Negra
   - GLOB      # Globant — tech argentina, cotiza NYSE, clientes Fortune 500
-  - DESP      # Despegar.com — turismo latam
 
 tickers_byma:
   - YPFD      # YPF panel BYMA
