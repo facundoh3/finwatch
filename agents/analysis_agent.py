@@ -132,7 +132,7 @@ async def _run_groq(prompt: str, settings: Settings) -> RecommendationSet | None
         response = await client.chat.completions.create(
             model=GROQ_MODEL,
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=2000,
+            max_tokens=6000,
             temperature=0.0,
         )
         text = response.choices[0].message.content
@@ -154,7 +154,7 @@ async def _run_deepseek(prompt: str, settings: Settings) -> RecommendationSet | 
         response = await client.chat.completions.create(
             model=DEEPSEEK_MODEL,
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=2000,
+            max_tokens=6000,
             temperature=0.0,
         )
         text = response.choices[0].message.content
@@ -173,7 +173,7 @@ async def _run_openrouter(prompt: str, settings: Settings) -> RecommendationSet 
             client,
             messages=[{"role": "user", "content": prompt}],
             models=models,
-            max_tokens=2000,
+            max_tokens=4000,
             temperature=0.0,
             total_timeout=25.0,
         )
@@ -189,7 +189,7 @@ async def _run_claude(prompt: str, settings: Settings) -> RecommendationSet | No
         client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
         message = await client.messages.create(
             model=CLAUDE_MODEL,
-            max_tokens=1500,
+            max_tokens=6000,
             messages=[{"role": "user", "content": prompt}],
         )
         logger.info(f"Claude: {message.usage.output_tokens} tokens")
