@@ -442,7 +442,12 @@ def _render_recomendaciones(recs, ctx):
         key=lambda r: (0 if r.ticker in portfolio else 1, action_order.get(r.action.value, 3)),
     )
 
-    for rec in sorted_recs:
+    seen_tickers: set[str] = set()
+    for idx, rec in enumerate(sorted_recs):
+        if rec.ticker in seen_tickers:
+            continue
+        seen_tickers.add(rec.ticker)
+
         is_owned = rec.ticker in portfolio
         display = rec.to_display_dict()
         colors = {"BUY": "#1a4a1a", "WAIT": "#4a3a00", "AVOID": "#4a1010"}
@@ -482,13 +487,13 @@ def _render_recomendaciones(recs, ctx):
 
             if is_owned:
                 _render_position_summary(rec.ticker, portfolio[rec.ticker], snap)
-                if st.button(f"Quitar {rec.ticker} del portafolio", key=f"del_{rec.ticker}"):
+                if st.button(f"Quitar {rec.ticker} del portafolio", key=f"del_{rec.ticker}_{idx}"):
                     p = _load_portfolio()
                     p.pop(rec.ticker, None)
                     _save_portfolio(p)
                     st.rerun()
             elif rec.action.value in ("BUY", "WAIT"):
-                _render_buy_form(rec.ticker, snap)
+                _render_buy_form(rec.ticker, snap, idx)
 
 
 def _render_position_summary(ticker: str, pos: dict, snap):
@@ -519,33 +524,34 @@ def _render_position_summary(ticker: str, pos: dict, snap):
         st.info(f"⬇️ Bajó {snap.change_pct:.1f}% hoy — si el análisis sigue siendo positivo, podría ser un buen momento para sumar.")
 
 
-def _render_buy_form(ticker: str, snap=None):
+def _render_buy_form(ticker: str, snap=None, _idx: int = 0):
     from core.services.technical_service import calc_stop_loss
+    _k = f"{ticker}_{_idx}"
     with st.expander(f"📥 Registrar compra de {ticker}"):
         default_price = float(snap.current_price) if snap else 0.0
         buy_price = st.number_input(
             "Precio de compra por acción (USD)",
-            min_value=0.0, value=default_price, step=0.01, format="%.2f", key=f"price_{ticker}",
+            min_value=0.0, value=default_price, step=0.01, format="%.2f", key=f"price_{_k}",
         )
         if buy_price > 0:
             stop = calc_stop_loss(buy_price)
             st.caption(f"🛑 Stop-loss sugerido (O'Neil -7%): **${stop:.2f}** · Salí si cae por debajo de este precio.")
         ars_amount = st.number_input(
             "¿Cuánto invertiste? (ARS)",
-            min_value=0, step=1000, key=f"ars_{ticker}",
+            min_value=0, step=1000, key=f"ars_{_k}",
         )
         usd_rate = st.number_input(
             "Tipo de cambio ARS/USD al momento de la compra",
-            min_value=1.0, value=1050.0, step=10.0, key=f"rate_{ticker}",
+            min_value=1.0, value=1050.0, step=10.0, key=f"rate_{_k}",
         )
         days_to_hold = st.slider(
             "¿Cuántos días pensás mantenerla?",
-            1, 365, 30, key=f"days_{ticker}",
+            1, 365, 30, key=f"days_{_k}",
         )
         if ars_amount > 0 and usd_rate > 0:
             st.caption(f"≈ ${ars_amount / usd_rate:.0f} USD invertidos")
 
-        if st.button(f"✅ Guardar compra de {ticker}", key=f"save_{ticker}"):
+        if st.button(f"✅ Guardar compra de {ticker}", key=f"save_{_k}"):
             if ars_amount > 0:
                 from core.services.technical_service import calc_stop_loss
                 p = _load_portfolio()
