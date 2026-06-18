@@ -1,0 +1,37 @@
+# Calendario de eventos macro de alto impacto en USA — mantenido a mano.
+# El calendario económico de Finnhub requiere plan pago (403 en plan free),
+# así que estos eventos —siempre programados con meses de anticipación por
+# la Fed/BLS— se cargan desde aquí en vez de pedírselos a una API.
+#
+# NFP (Non-Farm Payrolls / Employment Situation) NO está en este archivo:
+# se calcula solo en core/services/economic_calendar.py (primer viernes de
+# cada mes). Es la regla que usa el BLS casi siempre — rara excepción en
+# años con cierre de gobierno o feriados que corren el calendario.
+#
+# Mantenimiento: actualizar una vez al año, cuando la Fed y el BLS publican
+# el calendario del año siguiente (normalmente entre octubre y diciembre).
+#   FOMC: https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
+#   CPI:  https://www.bls.gov/schedule/news_release/cpi.htm
+
+fomc_2026:
+  - "2026-01-28"  # reunión 27-28 ene
+  - "2026-03-18"  # reunión 17-18 mar — incluye proyecciones económicas (dot plot)
+  - "2026-04-29"  # reunión 28-29 abr
+  - "2026-06-17"  # reunión 16-17 jun — incluye proyecciones económicas (dot plot)
+  - "2026-07-29"  # reunión 28-29 jul
+  - "2026-09-16"  # reunión 15-16 sep — incluye proyecciones económicas (dot plot)
+  - "2026-10-28"  # reunión 27-28 oct
+  - "2026-12-09"  # reunión 8-9 dic — incluye proyecciones económicas (dot plot)
+
+cpi_2026:
+  - "2026-01-13"  # dato de diciembre 2025
+  - "2026-02-13"  # dato de enero 2026
+  - "2026-03-11"  # dato de febrero 2026
+  - "2026-04-10"  # dato de marzo 2026
+  - "2026-05-12"  # dato de abril 2026
+  - "2026-06-10"  # dato de mayo 2026
+  - "2026-07-14"  # dato de junio 2026
+  - "2026-08-12"  # dato de julio 2026
+  - "2026-09-11"  # dato de agosto 2026
+  - "2026-10-14"  # dato de septiembre 2026
+  - "2026-12-18"  # dato de noviembre 2026 — falta confirmar el dato de octubre, completar cuando el BLS lo publique
