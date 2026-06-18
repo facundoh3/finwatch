@@ -93,26 +93,3 @@ class FinnhubClient:
                 except Exception as e:
                     logger.debug(f"Noticia general descartada: {e}")
             return items
-
-    async def get_economic_calendar(self, days_ahead: int = 7) -> list[dict]:
-        """Próximos eventos macroeconómicos clave (FED, CPI, NFP, etc.)."""
-        from_date = datetime.utcnow().strftime("%Y-%m-%d")
-        to_date = (datetime.utcnow() + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
-        try:
-            async with httpx.AsyncClient(timeout=8.0) as client:
-                resp = await client.get(
-                    f"{FINNHUB_BASE}/calendar/economic",
-                    params={"from": from_date, "to": to_date},
-                    headers=self._headers,
-                )
-                resp.raise_for_status()
-                events = resp.json().get("economicCalendar", [])
-                # Filtrar solo eventos de alto impacto de USA
-                high_impact = [
-                    e for e in events
-                    if e.get("impact") in ("high", "medium") and e.get("country") == "US"
-                ]
-                return sorted(high_impact, key=lambda x: x.get("time", ""))[:10]
-        except Exception as e:
-            logger.debug(f"Calendario económico no disponible: {e}")
-            return []

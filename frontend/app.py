@@ -187,15 +187,10 @@ def _render_tracker_stats():
 
 
 def _render_economic_calendar():
-    from config.settings import get_settings
-    s = get_settings()
-    if not s.finnhub_api_key:
-        return
     if "eco_calendar" not in st.session_state:
         try:
-            from core.services.finnhub_client import FinnhubClient
-            finnhub = FinnhubClient(s.finnhub_api_key)
-            st.session_state["eco_calendar"] = _run_async(finnhub.get_economic_calendar(days_ahead=7))
+            from core.services.economic_calendar import get_upcoming_events
+            st.session_state["eco_calendar"] = get_upcoming_events(days_ahead=10)
         except Exception:
             st.session_state["eco_calendar"] = []
     events = st.session_state.get("eco_calendar", [])
