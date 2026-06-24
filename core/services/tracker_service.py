@@ -11,6 +11,18 @@ from loguru import logger
 
 _TRACKER_FILE = Path(__file__).parent.parent.parent / "config" / "recommendation_tracker.json"
 
+# Umbrales para decidir CORRECT/INCORRECT — un movimiento de ±1% es ruido, no
+# una señal validada. MEANINGFUL_MOVE confirma la tesis; WRONG_MOVE la refuta
+# con el mismo -7% que usa technical_service.calc_stop_loss (regla de O'Neil),
+# para no inventar un número nuevo: si el movimiento hubiera saltado el
+# stop-loss real de la app, la recomendación fue mala.
+MEANINGFUL_MOVE_PCT = 0.03
+WRONG_MOVE_PCT = 0.07
+
+# Bajo esta cantidad de recomendaciones resueltas, el % de precisión no es
+# estadísticamente confiable y la UI debe avisarlo en vez de mostrarlo pelado.
+MIN_RELIABLE_SAMPLE = 30
+
 
 @dataclass
 class TrackerEntry:
@@ -64,9 +76,19 @@ def resolve_pending(current_prices: dict) -> None:
             continue
         pct = (price_now - e.price_at_analysis) / e.price_at_analysis
         if e.action == "BUY":
-            e.outcome = "CORRECT" if pct > 0.01 else "INCORRECT"
+            if pct >= MEANINGFUL_MOVE_PCT:
+                e.outcome = "CORRECT"
+            elif pct <= -WRONG_MOVE_PCT:
+                e.outcome = "INCORRECT"
+            else:
+                e.outcome = "NEUTRAL"
         elif e.action == "AVOID":
-            e.outcome = "CORRECT" if pct < -0.01 else "INCORRECT"
+            if pct <= -MEANINGFUL_MOVE_PCT:
+                e.outcome = "CORRECT"
+            elif pct >= WRONG_MOVE_PCT:
+                e.outcome = "INCORRECT"
+            else:
+                e.outcome = "NEUTRAL"
         else:
             e.outcome = "NEUTRAL"
         e.final_price = float(price_now)
@@ -81,7 +103,7 @@ def get_accuracy_stats() -> dict:
     entries = _load()
     evaluable = [e for e in entries if e.resolved and e.outcome != "NEUTRAL"]
     if not evaluable:
-        return {"total": 0, "correct": 0, "accuracy": None, "by_action": {}}
+        return {"total": 0, "correct": 0, "accuracy": None, "by_action": {}, "reliable": False}
     correct = sum(1 for e in evaluable if e.outcome == "CORRECT")
     by_action = {}
     for action in ("BUY", "AVOID"):
@@ -95,6 +117,7 @@ def get_accuracy_stats() -> dict:
         "accuracy": round(correct / len(evaluable) * 100),
         "by_action": by_action,
         "pending": len([e for e in entries if not e.resolved]),
+        "reliable": len(evaluable) >= MIN_RELIABLE_SAMPLE,
     }
 
 

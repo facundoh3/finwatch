@@ -24,6 +24,11 @@ PROMPT_PATH = Path(__file__).parent.parent / "config" / "prompts" / "context_age
 _NEWS_CACHE_TTL = 1440      # minutos — días de semana, se invalida al cambiar cierre NYSE
 _WEEKEND_CACHE_TTL = 360    # minutos — fin de semana, se refresca cada 6h
 
+# 300 días calendario ≈ 200 ruedas — necesario para SMA150 (Weinstein Stage 2),
+# no solo SMA20/50. Antes se pedían 60 días y el analysis_agent nunca veía el
+# checklist técnico real, solo el precio: podía recomendar BUY en Stage 4.
+_TECHNICAL_HISTORY_DAYS = 300
+
 
 async def run(
     tickers_usa: list[str],
@@ -64,14 +69,14 @@ async def run(
 
     if filtered_news is None:
         news_items = await _fetch_all_news(tickers_usa, settings, actual_hours)
-        filtered_news, _ = await asyncio.gather(
+        filtered_news, technical_summary = await asyncio.gather(
             _filter_news(news_items, all_tickers, market_overview, settings),
             _enrich_with_technicals(market_overview, tickers_usa),
         )
         if cache:
             cache.set(news_key, [n.model_dump(mode="json") for n in filtered_news])
     else:
-        await _enrich_with_technicals(market_overview, tickers_usa)
+        technical_summary = await _enrich_with_technicals(market_overview, tickers_usa)
 
     news_collection = NewsCollection(
         items=filtered_news,
@@ -83,6 +88,7 @@ async def run(
         news=news_collection,
         market=market_overview,
         query_tickers=all_tickers,
+        technical_summary=technical_summary,
     )
 
 
@@ -319,22 +325,44 @@ async def _filter_news(
     return tier_a[:20] or news_items[:20]
 
 
-async def _enrich_with_technicals(market: MarketOverview, tickers_usa: list[str]) -> None:
-    """Agrega SMA20/SMA50 a los snapshots de USA en paralelo con el filtrado de noticias."""
+def _format_technical_line(report) -> str:
+    """Línea compacta del checklist técnico para el prompt del analysis_agent."""
+    failed = [s.name for s in report.signals if not s.ok]
+    falla_str = f" | falla: {', '.join(failed)}" if failed else " | todas las señales OK"
+    return f"{report.ticker}: {report.stage} · {report.summary}{falla_str}"
+
+
+async def _enrich_with_technicals(market: MarketOverview, tickers_usa: list[str]) -> str:
+    """
+    Agrega SMA20/SMA50 a los snapshots y calcula el checklist técnico completo
+    (Weinstein Stage + O'Neil) por ticker — la misma lógica determinística que
+    ve el usuario en la UI. Antes el analysis_agent solo veía SMA20/50 sueltos
+    y podía recomendar BUY sin chequear si el ticker está en tendencia bajista.
+    """
     try:
+        from core.services import technical_service
         from core.services.chart_service import get_histories, get_sma_values
         histories = await asyncio.wait_for(
-            get_histories(tickers_usa, days=60),
-            timeout=12.0,
+            get_histories(tickers_usa, days=_TECHNICAL_HISTORY_DAYS),
+            timeout=15.0,
         )
+        lines = []
         for snap in market.snapshots:
-            if snap.ticker in histories:
-                snap.sma20, snap.sma50 = get_sma_values(histories[snap.ticker])
-        logger.info(f"Técnicos: SMAs calculadas para {len(histories)} tickers")
+            df = histories.get(snap.ticker)
+            if df is None:
+                continue
+            snap.sma20, snap.sma50 = get_sma_values(df)
+            report = technical_service.analyze(snap.ticker, df, snap.current_price, snap.high_52w)
+            if report.signals:
+                lines.append(_format_technical_line(report))
+        logger.info(f"Técnicos: checklist Weinstein/O'Neil calculado para {len(lines)}/{len(tickers_usa)} tickers")
+        return "\n".join(lines)
     except asyncio.TimeoutError:
-        logger.warning("Enriquecimiento técnico: timeout de 12s")
+        logger.warning("Enriquecimiento técnico: timeout de 15s")
+        return ""
     except Exception as e:
         logger.warning(f"Enriquecimiento técnico fallido: {e}")
+        return ""
 
 
 async def _fetch_yfinance_byma(tickers: list[str]) -> list[MarketSnapshot]:
