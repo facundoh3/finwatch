@@ -182,6 +182,8 @@ def _render_tracker_stats():
             parts.append(f"{action} {s['pct']}%")
         detail = " · ".join(parts) if parts else ""
         st.sidebar.caption(f"🎯 Precisión: {acc}% ({stats['correct']}/{stats['total']}) — {detail}")
+        if not stats.get("reliable", False):
+            st.sidebar.caption("⚠️ Muestra chica — no tomar este % como precisión real todavía")
     except Exception:
         pass
 
