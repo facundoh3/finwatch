@@ -338,6 +338,12 @@ async def _enrich_with_technicals(market: MarketOverview, tickers_usa: list[str]
     (Weinstein Stage + O'Neil) por ticker — la misma lógica determinística que
     ve el usuario en la UI. Antes el analysis_agent solo veía SMA20/50 sueltos
     y podía recomendar BUY sin chequear si el ticker está en tendencia bajista.
+
+    Itera sobre tickers_usa (no sobre market.snapshots) y usa market.get(ticker)
+    a propósito: GGAL/BBAR/LOMA están tanto en la lista de ADRs como en la de
+    BYMA con el mismo string de ticker, y _fetch_market_data agrega los
+    snapshots de USA antes que los de BYMA — iterar snapshots directamente
+    aplicaba el historial en USD del ADR al snapshot en pesos de BYMA.
     """
     try:
         from core.services import technical_service
@@ -347,12 +353,13 @@ async def _enrich_with_technicals(market: MarketOverview, tickers_usa: list[str]
             timeout=15.0,
         )
         lines = []
-        for snap in market.snapshots:
-            df = histories.get(snap.ticker)
-            if df is None:
+        for ticker in tickers_usa:
+            df = histories.get(ticker)
+            snap = market.get(ticker)
+            if df is None or snap is None:
                 continue
             snap.sma20, snap.sma50 = get_sma_values(df)
-            report = technical_service.analyze(snap.ticker, df, snap.current_price, snap.high_52w)
+            report = technical_service.analyze(ticker, df, snap.current_price, snap.high_52w)
             if report.signals:
                 lines.append(_format_technical_line(report))
         logger.info(f"Técnicos: checklist Weinstein/O'Neil calculado para {len(lines)}/{len(tickers_usa)} tickers")
