@@ -112,6 +112,10 @@ class AgentContext(BaseModel):
     news: NewsCollection
     market: MarketOverview
     query_tickers: list[str]
+    technical_summary: str = Field(
+        default="",
+        description="Checklist técnico determinístico (Weinstein/O'Neil) por ticker, calculado sin LLM — no es texto generado por el modelo.",
+    )
     timestamp: datetime = Field(default_factory=datetime.utcnow)
 
     def to_claude_prompt_block(self) -> str:
@@ -122,11 +126,15 @@ class AgentContext(BaseModel):
         tickers_str = ", ".join(self.query_tickers)
         news_bullets = self.news.to_context_bullets()
         market_block = self.market.to_context_block()
+        tech_block = self.technical_summary or "Sin datos técnicos disponibles para estos tickers."
 
         return f"""TICKERS A ANALIZAR: {tickers_str}
 
 PRECIOS ACTUALES:
 {market_block}
+
+ANÁLISIS TÉCNICO (Weinstein Stage + checklist O'Neil — dato real ya calculado, NO inventes soportes/resistencias que no estén acá):
+{tech_block}
 
 NOTICIAS RELEVANTES (últimas {self.news.hours_back}hs):
 {news_bullets}

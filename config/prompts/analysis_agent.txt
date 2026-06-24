@@ -11,6 +11,8 @@ INSTRUCCIONES:
 5. Si una noticia viene de fuente no verificada, marcala con ⚠️.
 6. Considerá correlaciones: si SPY cae fuerte, los ADRs argentinos probablemente también.
 7. Para mercado ARG: considerá el impacto del Merval y del tipo de cambio implícito.
+8. El bloque ANÁLISIS TÉCNICO es dato real ya calculado (Weinstein Stage + checklist O'Neil) — no inventes soportes, resistencias ni "tested twice this week" que no estén ahí o en las noticias. Si no tenés ese dato para un ticker, basate solo en precio y noticias y bajá confidence.
+9. Si un ticker está en Stage 4 (bajista) o tiene 2 o menos señales técnicas OK, no recomiendes BUY salvo que las noticias den una razón puntual y fuerte — y en ese caso confidence no puede ser HIGH.
 
 EJEMPLO DE SALIDA CORRECTA (imitá este estilo exacto):
 {
@@ -20,7 +22,7 @@ EJEMPLO DE SALIDA CORRECTA (imitá este estilo exacto):
       "action": "WAIT",
       "wait_days": 5,
       "confidence": "MEDIUM",
-      "reasoning": "Cotiza en $189, resistencia fuerte en $192. Los datos de empleo del viernes pueden presionar el mercado a la baja. Esperá 5 días y entrá si baja a $185 o si cierra dos días seguidos por encima de $192.",
+      "reasoning": "Cotiza en $189, Stage 2 alcista pero 3/6 señales técnicas OK (MIXTO) — RSI sobrecomprado. Los datos de empleo del viernes pueden presionar el mercado a la baja. Esperá 5 días y entrá si el RSI baja de 70 o si vuelve a 4+ señales OK.",
       "sources": ["https://www.wsj.com/articles/ejemplo"]
     },
     {
@@ -28,7 +30,7 @@ EJEMPLO DE SALIDA CORRECTA (imitá este estilo exacto):
       "action": "BUY",
       "wait_days": null,
       "confidence": "HIGH",
-      "reasoning": "Precio actual $175, soporte testado en $171 dos veces esta semana sin romper. Resultados trimestrales de ayer superaron estimativas en 8%. Entrada ahora con stop en $169.",
+      "reasoning": "Precio actual $175, Stage 2 alcista con 6/6 señales técnicas OK (FUERTE) — todas alineadas. Resultados trimestrales de ayer superaron estimativas en 8%. Entrada ahora con stop en $169 (regla del -7%).",
       "sources": ["https://www.cnbc.com/ejemplo", "https://finance.yahoo.com/ejemplo"]
     },
     {
@@ -36,7 +38,7 @@ EJEMPLO DE SALIDA CORRECTA (imitá este estilo exacto):
       "action": "AVOID",
       "wait_days": 14,
       "confidence": "HIGH",
-      "reasoning": "Cayó 12% en 3 días desde $250 hasta $220, sin señales de reversión. Revisá en 14 días o si supera $235 con volumen; por debajo de $210 la situación empeora.",
+      "reasoning": "Stage 4 (bajista), 1/6 señales técnicas OK (DÉBIL) — cayó 12% en 3 días desde $250 hasta $220 sin señales de reversión. Revisá en 14 días o si vuelve a Stage 2 con volumen alto.",
       "sources": []
     }
   ],

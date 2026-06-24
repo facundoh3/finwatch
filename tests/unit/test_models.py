@@ -248,3 +248,18 @@ class TestAgentContext:
         assert "NVDA" in prompt_block
         assert "NVIDIA beats earnings" in prompt_block
         assert "$900.00" in prompt_block
+        assert "Sin datos técnicos disponibles" in prompt_block
+
+    def test_to_claude_prompt_block_includes_technical_summary(self):
+        news = NewsCollection(items=[], tickers_queried=["NVDA"])
+        market = MarketOverview(snapshots=[])
+        context = AgentContext(
+            news=news,
+            market=market,
+            query_tickers=["NVDA"],
+            technical_summary="NVDA: Stage 2 (alcista) · 5/6 señales OK — FUERTE | falla: RSI 14",
+        )
+        prompt_block = context.to_claude_prompt_block()
+
+        assert "Stage 2 (alcista)" in prompt_block
+        assert "falla: RSI 14" in prompt_block
