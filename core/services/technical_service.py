@@ -132,6 +132,17 @@ def analyze(ticker: str, df: pd.DataFrame, current_price: float | None = None, h
     else:
         signals.append(TechnicalSignal("52s máximo (O'Neil)", False, "Sin datos 52 semanas"))
 
+    # 7. MACD: línea MACD por encima de la señal (momentum alcista)
+    macd_ok = _calc_macd_bullish(close)
+    if macd_ok is not None:
+        signals.append(TechnicalSignal(
+            "MACD",
+            macd_ok,
+            "MACD > señal (momentum alcista)" if macd_ok else "MACD < señal (momentum bajista)",
+        ))
+    else:
+        signals.append(TechnicalSignal("MACD", False, "Sin suficientes datos (necesita 35+ velas)"))
+
     score = sum(1 for s in signals if s.ok)
     return TechnicalReport(ticker=ticker, signals=signals, score=score, max_score=len(signals), stage=stage)
 
@@ -139,6 +150,17 @@ def analyze(ticker: str, df: pd.DataFrame, current_price: float | None = None, h
 def calc_stop_loss(buy_price: float, pct: float = 0.07) -> float:
     """Stop loss a -7% desde el precio de compra (regla de O'Neil)."""
     return round(buy_price * (1 - pct), 2)
+
+
+def _calc_macd_bullish(close: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9) -> bool | None:
+    """True si MACD > línea de señal (momentum alcista). Necesita al menos slow+signal velas."""
+    if len(close) < slow + signal:
+        return None
+    ema_fast = close.ewm(span=fast, adjust=False).mean()
+    ema_slow = close.ewm(span=slow, adjust=False).mean()
+    macd_line = ema_fast - ema_slow
+    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+    return bool(macd_line.iloc[-1] > signal_line.iloc[-1])
 
 
 def _calc_rsi(close: pd.Series, period: int = 14) -> float | None:

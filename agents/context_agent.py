@@ -186,13 +186,13 @@ async def _fetch_all_news(tickers: list[str], settings: Settings, hours_back: in
 _OPENROUTER_FILTER_MODEL = "openai/gpt-4o-mini"
 
 # Límites de noticias por proveedor según capacidad de tokens
-_MAX_NEWS_OR_PAID = 65    # OpenRouter pago: sin límite práctico — más candidatas, mejor selección
+_MAX_NEWS_OR_PAID = 80    # OpenRouter pago: sin límite práctico — más candidatas, mejor selección
 _MAX_NEWS_GROQ = 20       # Groq llama-3.1-8b: límite 6000 TPM → ~20 items seguros
 _MAX_NEWS_OR_FREE = 15    # OpenRouter free: modelos pequeños, conservador
 
 # Si el LLM selecciona menos de esto, se completa con las noticias Tier A/B
 # más recientes que no haya elegido, para no quedar con muy pocas en la UI.
-_MIN_NEWS_FLOOR = 8
+_MIN_NEWS_FLOOR = 20
 
 
 def _build_filter_prompt(
