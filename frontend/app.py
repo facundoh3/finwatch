@@ -132,6 +132,7 @@ def _sidebar(cfg: dict) -> tuple[list[str], bool]:
     except Exception:
         _consensus = "IA"
     st.sidebar.caption(f"IA: {_consensus} · fallback Claude")
+    _render_iol_status()
 
     return view_filter, force_refresh
 
@@ -151,7 +152,22 @@ def _check_settings():
         issues.append("⚠️ **FINNHUB_API_KEY** no configurada — datos de mercado limitados")
     if not s.marketaux_api_key:
         issues.append("⚠️ **MARKETAUX_API_KEY** no configurada — menos fuentes de noticias")
+    if not (s.iol_username and s.iol_password):
+        issues.append("💡 **IOL_USERNAME / IOL_PASSWORD** no configurados — sin estas credenciales los precios del mercado argentino (BCBA) vienen de fuentes menos confiables")
     return issues
+
+
+def _iol_connected() -> bool:
+    from config.settings import get_settings
+    s = get_settings()
+    return bool(s.iol_username and s.iol_password)
+
+
+def _render_iol_status():
+    if _iol_connected():
+        st.sidebar.caption("🏦 IOL: conectado — precios BCBA en tiempo real")
+    else:
+        st.sidebar.caption("🏦 IOL: no configurado — agregá IOL_USERNAME/IOL_PASSWORD al .env")
 
 
 def _render_news_cache_status():
