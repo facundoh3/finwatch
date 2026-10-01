@@ -148,7 +148,7 @@ async def _run_groq(prompt: str, settings: Settings) -> RecommendationSet | None
             return _parse(text)
         except Exception as e:
             err = str(e)
-            if "model_not_found" in err or '"code": 404' in err or "404" in err:
+            if any(k in err for k in ("model_not_found", "model_decommissioned", "does not exist", "decommissioned")):
                 logger.warning(f"Groq model {model!r} not available, trying next")
                 continue
             logger.warning(f"Groq error: {e}")
