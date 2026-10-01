@@ -15,7 +15,14 @@ from core.models.recommendation import Action, AgentContext, Confidence, Recomme
 
 PROMPT_PATH = Path(__file__).parent.parent / "config" / "prompts" / "analysis_agent.txt"
 CLAUDE_MODEL = "claude-sonnet-4-6"
-GROQ_MODEL = "llama-3.3-70b-versatile"
+# Ordered by preference — _run_groq skips any model that returns 404/model_not_found
+_GROQ_MODELS = [
+    "llama-3.3-70b-versatile",
+    "llama-3.1-70b-versatile",
+    "llama3-70b-8192",
+    "mixtral-8x7b-32768",
+    "llama-3.1-8b-instant",
+]
 DEEPSEEK_MODEL = "deepseek-chat"  # V3: muy bueno, 4x más barato que R1 (reasoner)
 
 
@@ -127,20 +134,27 @@ def _build_prompt(context: AgentContext) -> str:
 
 
 async def _run_groq(prompt: str, settings: Settings) -> RecommendationSet | None:
-    try:
-        client = build_groq_client(settings.groq_api_key)
-        response = await client.chat.completions.create(
-            model=GROQ_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=6000,
-            temperature=0.0,
-        )
-        text = response.choices[0].message.content
-        logger.info(f"Groq ({GROQ_MODEL}): {response.usage.completion_tokens} tokens")
-        return _parse(text)
-    except Exception as e:
-        logger.warning(f"Groq error: {e}")
-        return None
+    client = build_groq_client(settings.groq_api_key)
+    for model in _GROQ_MODELS:
+        try:
+            response = await client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=6000,
+                temperature=0.0,
+            )
+            text = response.choices[0].message.content
+            logger.info(f"Groq ({model}): {response.usage.completion_tokens} tokens")
+            return _parse(text)
+        except Exception as e:
+            err = str(e)
+            if "model_not_found" in err or '"code": 404' in err or "404" in err:
+                logger.warning(f"Groq model {model!r} not available, trying next")
+                continue
+            logger.warning(f"Groq error: {e}")
+            return None
+    logger.warning("Groq: ningún modelo disponible en la lista de fallback")
+    return None
 
 
 async def _run_deepseek(prompt: str, settings: Settings) -> RecommendationSet | None:
