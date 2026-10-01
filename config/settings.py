@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     groq_api_key: str = ""
     deepseek_api_key: str = ""
     alpha_vantage_api_key: str = ""
+    iol_username: str = ""
+    iol_password: str = ""
 
     cache_ttl_minutes: int = 30
     news_hours_back: int = 24

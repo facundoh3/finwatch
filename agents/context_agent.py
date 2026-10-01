@@ -13,6 +13,7 @@ from core.models.market import MarketOverview, MarketSnapshot
 from core.models.news import NewsCollection, NewsItem
 from core.models.recommendation import AgentContext
 from core.services.byma_client import BYMAClient
+from core.services.iol_client import IOLClient
 from core.services.cache_service import CacheService
 from core.services.finnhub_client import FinnhubClient
 from core.services.market_calendar import get_last_close_date
@@ -110,20 +111,30 @@ async def _fetch_market_data(
         snapshots.extend(await _fetch_yfinance(tickers_usa))
 
     if tickers_byma:
-        try:
-            byma = BYMAClient()
-            byma_snapshots = await byma.get_equities()
-            relevant = {s.ticker for s in byma_snapshots}
-            for t in tickers_byma:
-                if t.upper() in relevant:
-                    snap = next(s for s in byma_snapshots if s.ticker == t.upper())
-                    snapshots.append(snap)
-        except Exception as e:
-            logger.warning(f"Error BYMA: {e} — usando yfinance .BA como fallback")
-            byma_fallback = await _fetch_yfinance_byma(tickers_byma)
-            snapshots.extend(byma_fallback)
-            if byma_fallback:
-                logger.info(f"BYMA fallback: {len(byma_fallback)} tickers via yfinance .BA")
+        if settings.iol_username and settings.iol_password:
+            iol = IOLClient(settings.iol_username, settings.iol_password)
+            iol_snaps = await iol.get_byma_quotes(tickers_byma)
+            if iol_snaps:
+                snapshots.extend(iol_snaps)
+                logger.info(f"IOL BCBA: {len(iol_snaps)}/{len(tickers_byma)} tickers")
+            else:
+                logger.warning("IOL BCBA: 0 cotizaciones — usando yfinance .BA como fallback")
+                snapshots.extend(await _fetch_yfinance_byma(tickers_byma))
+        else:
+            try:
+                byma = BYMAClient()
+                byma_snapshots = await byma.get_equities()
+                relevant = {s.ticker for s in byma_snapshots}
+                for t in tickers_byma:
+                    if t.upper() in relevant:
+                        snap = next(s for s in byma_snapshots if s.ticker == t.upper())
+                        snapshots.append(snap)
+            except Exception as e:
+                logger.warning(f"Error BYMA: {e} — usando yfinance .BA como fallback")
+                byma_fallback = await _fetch_yfinance_byma(tickers_byma)
+                snapshots.extend(byma_fallback)
+                if byma_fallback:
+                    logger.info(f"BYMA fallback: {len(byma_fallback)} tickers via yfinance .BA")
 
     return MarketOverview(snapshots=snapshots)
 
