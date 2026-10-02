@@ -353,7 +353,7 @@ def main():
 
     st.divider()
 
-    tab1, tab2, tab3, tab4 = st.tabs(["💡 Recomendaciones", "📊 Precios", "📰 Noticias", "💼 Mi Portafolio"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["💡 Recomendaciones", "📊 Precios", "📰 Noticias", "💼 Mi Portafolio", "🎯 Metas"])
 
     with tab1:
         _render_recomendaciones(displayed_recs, ctx)
@@ -363,6 +363,9 @@ def main():
         _render_noticias(ctx)
     with tab4:
         _render_portfolio_tab(recs, ctx)
+    with tab5:
+        from frontend.components.goals_tab import render_goals_tab
+        render_goals_tab()
 
 
 def _compute_diff(old_recs, new_recs) -> dict:

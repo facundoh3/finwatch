@@ -125,6 +125,14 @@ class IOLClient:
                 results.append(snap)
         return results
 
+    async def get_mep_rate(self) -> float | None:
+        """Dólar MEP implícito: precio de AL30 en pesos / precio de AL30D en dólares."""
+        ars = await self.get_quote("AL30", market="bCBA", term="t1")
+        usd = await self.get_quote("AL30D", market="bCBA", term="t1")
+        if not ars or not usd or usd.current_price <= 0:
+            return None
+        return ars.current_price / usd.current_price
+
     # ------------------------------------------------------------ portfolio
 
     async def get_portfolio(self, country: str = "argentina") -> list[dict]:
