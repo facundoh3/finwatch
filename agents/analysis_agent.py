@@ -15,15 +15,12 @@ from core.models.recommendation import Action, AgentContext, Confidence, Recomme
 
 PROMPT_PATH = Path(__file__).parent.parent / "config" / "prompts" / "analysis_agent.txt"
 CLAUDE_MODEL = "claude-sonnet-4-6"
-# Ordered by preference — _run_groq skips any model that returns 404/model_not_found
-_GROQ_MODELS = [
-    "llama-3.3-70b-versatile",
-    "llama-3.1-70b-versatile",
-    "llama3-70b-8192",
-    "mixtral-8x7b-32768",
-    "llama-3.1-8b-instant",
-]
 DEEPSEEK_MODEL = "deepseek-chat"  # V3: muy bueno, 4x más barato que R1 (reasoner)
+
+# Keywords que identifican modelos grandes/capaces de Groq (orden de preferencia)
+_GROQ_PREFERRED_KEYWORDS = ["llama-4", "llama3-70", "llama-3", "70b", "8x7b", "gemma2-9b", "gemma"]
+
+_groq_model_cache: str | None = None  # se rellena dinámicamente en el primer run
 
 
 async def run(context: AgentContext, settings: Settings) -> RecommendationSet:
@@ -133,28 +130,58 @@ def _build_prompt(context: AgentContext) -> str:
     return PROMPT_PATH.read_text().replace("{context_block}", context.to_claude_prompt_block())
 
 
-async def _run_groq(prompt: str, settings: Settings) -> RecommendationSet | None:
-    client = build_groq_client(settings.groq_api_key)
-    for model in _GROQ_MODELS:
-        try:
-            response = await client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=6000,
-                temperature=0.0,
-            )
-            text = response.choices[0].message.content
-            logger.info(f"Groq ({model}): {response.usage.completion_tokens} tokens")
-            return _parse(text)
-        except Exception as e:
-            err = str(e)
-            if any(k in err for k in ("model_not_found", "model_decommissioned", "does not exist", "decommissioned")):
-                logger.warning(f"Groq model {model!r} not available, trying next")
-                continue
-            logger.warning(f"Groq error: {e}")
-            return None
-    logger.warning("Groq: ningún modelo disponible en la lista de fallback")
+async def _pick_groq_model(api_key: str) -> str | None:
+    """Consulta /models de Groq y devuelve el mejor modelo disponible."""
+    global _groq_model_cache
+    if _groq_model_cache:
+        return _groq_model_cache
+    try:
+        client = build_groq_client(api_key)
+        resp = await client.models.list()
+        ids = [m.id for m in resp.data]
+        # Ordenar por preferencia: el primer keyword que matchee gana
+        def _rank(model_id: str) -> int:
+            low = model_id.lower()
+            for i, kw in enumerate(_GROQ_PREFERRED_KEYWORDS):
+                if kw in low:
+                    return i
+            return len(_GROQ_PREFERRED_KEYWORDS)
+        ids.sort(key=_rank)
+        if ids:
+            _groq_model_cache = ids[0]
+            logger.info(f"Groq: modelo seleccionado automáticamente → {_groq_model_cache} (de {len(ids)} disponibles)")
+            return _groq_model_cache
+    except Exception as e:
+        logger.warning(f"Groq /models error: {e}")
     return None
+
+
+async def _run_groq(prompt: str, settings: Settings) -> RecommendationSet | None:
+    model = await _pick_groq_model(settings.groq_api_key)
+    if not model:
+        logger.warning("Groq: no se pudo obtener lista de modelos")
+        return None
+    client = build_groq_client(settings.groq_api_key)
+    try:
+        response = await client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=6000,
+            temperature=0.0,
+        )
+        text = response.choices[0].message.content
+        logger.info(f"Groq ({model}): {response.usage.completion_tokens} tokens")
+        return _parse(text)
+    except Exception as e:
+        # Si el modelo seleccionado fue dado de baja, limpiar caché para re-descubrir
+        err = str(e)
+        if any(k in err for k in ("model_not_found", "model_decommissioned", "decommissioned")):
+            global _groq_model_cache
+            _groq_model_cache = None
+            logger.warning(f"Groq model {model!r} decommissioned — se re-descubrirá en el próximo run")
+        else:
+            logger.warning(f"Groq error: {e}")
+        return None
 
 
 async def _run_deepseek(prompt: str, settings: Settings) -> RecommendationSet | None:
