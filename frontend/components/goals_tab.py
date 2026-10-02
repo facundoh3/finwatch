@@ -9,6 +9,7 @@ from core.services.goals_service import (
     GoalsConfig,
     build_cost_usd,
     load_goals,
+    plan_by_goal,
     project,
     save_goals,
 )
@@ -64,8 +65,8 @@ def _init_state(cfg: GoalsConfig, mep_live: float | None) -> None:
         "g_return_pct": round(cfg.annual_return * 100, 1),
         "g_emergency": int(cfg.emergency_months),
         "g_goals_base": pd.DataFrame(
-            [{"Meta": g.name, "Monto USD": g.target_usd} for g in cfg.goals],
-            columns=["Meta", "Monto USD"],
+            [{"Meta": g.name, "Monto USD": g.target_usd, "Plazo (años)": g.years} for g in cfg.goals],
+            columns=["Meta", "Monto USD", "Plazo (años)"],
         ),
         "_goals_init": True,
     })
@@ -117,10 +118,20 @@ def render_goals_tab() -> None:
         width="stretch",
         hide_index=True,
         key="goals_editor",
-        column_config={"Monto USD": st.column_config.NumberColumn(min_value=0, step=500, format="%d")},
+        column_config={
+            "Monto USD": st.column_config.NumberColumn(min_value=0, step=500, format="%d"),
+            "Plazo (años)": st.column_config.NumberColumn(
+                min_value=0.5, max_value=30, step=0.5,
+                help="¿En cuánto tiempo la querés? Define cuánto ahorrar por mes y dónde invertir.",
+            ),
+        },
     )
     goals = [
-        Goal(str(row["Meta"]), float(row["Monto USD"]))
+        Goal(
+            str(row["Meta"]),
+            float(row["Monto USD"]),
+            float(row["Plazo (años)"]) if pd.notna(row.get("Plazo (años)")) else None,
+        )
         for row in edited.to_dict("records")
         if pd.notna(row["Meta"]) and str(row["Meta"]).strip() and pd.notna(row["Monto USD"]) and row["Monto USD"] > 0
     ]
@@ -169,7 +180,53 @@ def render_goals_tab() -> None:
     st.dataframe(rows, hide_index=True, width="stretch")
 
     _render_balance_chart(proj.balance_usd, proj.results, today)
+    _render_plan(new_cfg, mep)
     _render_land_calculator()
+
+
+def _render_plan(cfg: GoalsConfig, mep: float) -> None:
+    st.markdown("**📋 Plan: cuánto ahorrar y dónde invertir**")
+    st.caption(
+        "Ahorrás un monto fijo por mes que va primero a la meta más urgente; cuando la completás, "
+        "pasa a la siguiente. Cuanto más lejos está una meta, más riesgo podés tomar para que rinda más. "
+        "Tu ahorro actual y los ingresos extra cubren primero las metas más urgentes."
+    )
+    plan = plan_by_goal(cfg, mep)
+    if not plan.rows:
+        st.info("Poné un **Plazo (años)** en tus metas para ver cuánto tenés que ahorrar por mes.")
+        return
+
+    needed = plan.monthly_usd * mep
+    capacity = cfg.monthly_savings_ars
+    c1, c2, c3 = st.columns(3)
+    c1.metric(f"Necesitás ahorrar ({_usd(plan.monthly_usd)}/mes)", _ars(needed) + "/mes")
+    c2.metric("Hoy ahorrás", _ars(capacity) + "/mes")
+    c3.metric("Te sobra" if capacity >= needed else "Te falta", _ars(abs(capacity - needed)) + "/mes")
+
+    def _when(r) -> str:
+        if r.end_month == 0:
+            return "Ya cubierta con lo que tenés"
+        if r.start_month is None:
+            return f"Se completa sola con intereses (mes {r.end_month})"
+        return f"Mes {r.start_month} al {r.end_month}"
+
+    st.dataframe([{
+        "Meta": r.goal.name,
+        "Plazo": _duration(r.months),
+        "Dónde invertir": f"{r.instrument.name} — {r.instrument.examples}",
+        "Rinde aprox.": f"{r.instrument.annual_return:.1%}" if r.instrument.annual_return else "≈ inflación",
+        "Ya tenés": _usd(r.allocated_now),
+        "Cuándo le ahorrás": _when(r),
+    } for r in plan.rows], hide_index=True, width="stretch")
+
+    if needed > capacity:
+        st.warning("Con estos plazos no te alcanza. Estirá el plazo de alguna meta, bajá el monto o subí el ahorro.")
+    else:
+        st.success("Te alcanza. Lo que sobra sumalo a la meta en curso para llegar antes.")
+    st.caption(
+        "Rendimientos estimados en dólares, no garantizados. Los fondos y las ONs pueden bajar de precio "
+        "en el corto plazo; por eso lo de corto plazo va en instrumentos más estables."
+    )
 
 
 def _render_balance_chart(balances: list[float], results, today: date) -> None:

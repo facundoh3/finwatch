@@ -9,8 +9,11 @@ from core.services.goals_service import (
     GoalResult,
     GoalsConfig,
     all_goals,
+    EMERGENCY_INSTRUMENT,
     build_cost_usd,
+    instrument_for,
     load_goals,
+    plan_by_goal,
     project,
     save_goals,
 )
@@ -81,3 +84,50 @@ def test_save_and_load_roundtrip(tmp_path):
 
 def test_load_missing_file_returns_defaults(tmp_path):
     assert load_goals(tmp_path / "nope.json") == GoalsConfig()
+
+
+def test_instrument_gets_riskier_with_horizon():
+    returns = [instrument_for(y).annual_return for y in (0.5, 2, 4, 10)]
+    assert returns == sorted(returns)
+    assert len(set(returns)) == 4
+
+
+def test_plan_funds_most_urgent_goal_first():
+    cfg = _cfg(goals=[Goal("Casa", 20_000, 6), Goal("Auto", 12_000, 2)])
+    plan = plan_by_goal(cfg, MEP)
+    auto, casa = plan.rows
+    assert auto.goal.name == "Auto"
+    assert auto.start_month == 1 and auto.end_month <= 24
+    assert casa.start_month >= auto.end_month and casa.end_month <= 72
+
+
+def test_plan_monthly_is_the_minimum_that_meets_deadlines():
+    from core.services.goals_service import _simulate
+    plan = plan_by_goal(_cfg(goals=[Goal("Auto", 12_000, 2), Goal("Casa", 30_000, 7)]), MEP)
+    assert _simulate(plan.rows, plan.monthly_usd)
+    assert not _simulate(plan.rows, plan.monthly_usd * 0.99)
+
+
+def test_returns_lower_required_saving():
+    plan = plan_by_goal(_cfg(goals=[Goal("Auto", 12_000, 2)]), MEP)
+    assert 450 < plan.monthly_usd < 500  # 500 sin intereses
+
+
+def test_plan_allocates_savings_and_extra_income_by_urgency():
+    cfg = _cfg(
+        emergency_months=1,  # fondo = US$500
+        savings_usd=300,
+        extra_income_ars=500_000,  # US$500
+        goals=[Goal("Casa", 30_000, 7), Goal("Sin plazo", 5_000), Goal("Auto", 12_000, 2)],
+    )
+    rows = plan_by_goal(cfg, MEP).rows
+    assert [r.goal.name for r in rows] == ["Fondo de emergencia (1 mes)", "Auto", "Casa"]
+    assert rows[0].instrument == EMERGENCY_INSTRUMENT
+    assert rows[0].allocated_now == 500 and rows[0].end_month == 0
+    assert rows[1].allocated_now == 300
+    assert rows[2].allocated_now == 0
+
+
+def test_plan_needs_nothing_when_savings_cover_everything():
+    plan = plan_by_goal(_cfg(savings_usd=50_000, goals=[Goal("Auto", 12_000, 2)]), MEP)
+    assert plan.monthly_usd == 0
