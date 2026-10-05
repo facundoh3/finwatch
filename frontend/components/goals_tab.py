@@ -12,9 +12,12 @@ from core.services.goals_service import (
     plan_by_goal,
     project,
     save_goals,
+    this_month,
 )
 
 _DEFAULT_MEP = 1550.0
+_MONTHS_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
+              "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
 
 
 @st.cache_data(ttl=900, show_spinner=False)
@@ -37,6 +40,11 @@ def _ars(v: float) -> str:
 
 def _usd(v: float) -> str:
     return f"US${v:,.0f}".replace(",", ".")
+
+
+def _md(text: str) -> str:
+    """Escapa "$" para que Streamlit no lo tome como fórmula LaTeX."""
+    return text.replace("$", "\\$")
 
 
 def _duration(months: int) -> str:
@@ -64,9 +72,11 @@ def _init_state(cfg: GoalsConfig, mep_live: float | None) -> None:
         "g_extra_months": int(cfg.extra_income_months),
         "g_return_pct": round(cfg.annual_return * 100, 1),
         "g_emergency": int(cfg.emergency_months),
+        "g_last_done": cfg.last_done_month,
         "g_goals_base": pd.DataFrame(
-            [{"Meta": g.name, "Monto USD": g.target_usd, "Plazo (años)": g.years} for g in cfg.goals],
-            columns=["Meta", "Monto USD", "Plazo (años)"],
+            [{"Meta": g.name, "Monto USD": g.target_usd, "Plazo (años)": g.years, "Cumplida": g.done}
+             for g in cfg.goals],
+            columns=["Meta", "Monto USD", "Plazo (años)", "Cumplida"],
         ),
         "_goals_init": True,
     })
@@ -89,15 +99,21 @@ def render_goals_tab() -> None:
         "Dólar MEP", min_value=1.0, step=10.0, key="g_mep",
         help="Se calcula en vivo con AL30/AL30D vía IOL. Podés pisarlo a mano.",
     )
-    st.caption(f"🏦 MEP en vivo desde IOL: {_ars(mep_live)}" if mep_live else "⚠️ Sin IOL: MEP cargado a mano")
+    st.caption(_md(f"🏦 MEP en vivo desde IOL: {_ars(mep_live)}") if mep_live else "⚠️ Sin IOL: MEP cargado a mano")
 
     with st.expander("💵 Mis números", expanded=cfg.income_ars == 0):
         c1, c2 = st.columns(2)
         income = c1.number_input("Ingreso mensual (ARS)", min_value=0.0, step=50_000.0, key="g_income")
         expenses = c2.number_input("Gasto mensual (ARS)", min_value=0.0, step=50_000.0, key="g_expenses")
         c3, c4 = st.columns(2)
-        savings_ars = c3.number_input("Ahorro actual (ARS)", min_value=0.0, step=50_000.0, key="g_savings_ars")
-        savings_usd = c4.number_input("Ahorro actual (USD)", min_value=0.0, step=100.0, key="g_savings_usd")
+        savings_ars = c3.number_input(
+            "Ahorro en pesos (Mercado Pago)", min_value=0.0, step=50_000.0, key="g_savings_ars",
+            help="Lo que tenés ahorrado en pesos. Funciona como tu fondo de emergencia.",
+        )
+        savings_usd = c4.number_input(
+            "Ahorro en dólares (IOL)", min_value=0.0, step=100.0, key="g_savings_usd",
+            help="Lo que tenés invertido en dólares para tus metas (fondo en dólares, ONs, etc.).",
+        )
         c5, c6 = st.columns(2)
         extra = c5.number_input(
             "Ingresos extra próximos (ARS, total)", min_value=0.0, step=100_000.0, key="g_extra",
@@ -124,6 +140,10 @@ def render_goals_tab() -> None:
                 min_value=0.5, max_value=30, step=0.5,
                 help="¿En cuánto tiempo la querés? Define cuánto ahorrar por mes y dónde invertir.",
             ),
+            "Cumplida": st.column_config.CheckboxColumn(
+                help="Tildala cuando ya la usaste (ej: compraste el auto). Deja de contar y pasás a la siguiente.",
+                default=False,
+            ),
         },
     )
     goals = [
@@ -131,6 +151,7 @@ def render_goals_tab() -> None:
             str(row["Meta"]),
             float(row["Monto USD"]),
             float(row["Plazo (años)"]) if pd.notna(row.get("Plazo (años)")) else None,
+            bool(row.get("Cumplida")) if pd.notna(row.get("Cumplida")) else False,
         )
         for row in edited.to_dict("records")
         if pd.notna(row["Meta"]) and str(row["Meta"]).strip() and pd.notna(row["Monto USD"]) and row["Monto USD"] > 0
@@ -145,6 +166,7 @@ def render_goals_tab() -> None:
         extra_income_months=int(extra_months),
         annual_return=annual_return,
         emergency_months=emergency_months,
+        last_done_month=st.session_state["g_last_done"],
         goals=goals,
     )
     if new_cfg != cfg:
@@ -164,6 +186,8 @@ def render_goals_tab() -> None:
         st.warning("Con estos números no te queda ahorro mensual. Revisá ingreso y gasto.")
         return
 
+    _render_this_month(new_cfg, mep)
+
     proj = project(new_cfg, mep)
     today = date.today()
 
@@ -182,6 +206,84 @@ def render_goals_tab() -> None:
     _render_balance_chart(proj.balance_usd, proj.results, today)
     _render_plan(new_cfg, mep)
     _render_land_calculator()
+
+
+def _apply_month(keep_ars: float, excess_ars: float, transfer_usd: float, month_key: str) -> None:
+    st.session_state["g_savings_ars"] += keep_ars - excess_ars
+    st.session_state["g_savings_usd"] += transfer_usd
+    st.session_state["g_last_done"] = month_key
+
+
+def _render_this_month(cfg: GoalsConfig, mep: float) -> None:
+    today = date.today()
+    month_key = today.strftime("%Y-%m")
+    already_done = cfg.last_done_month == month_key
+    a = this_month(cfg, mep)
+
+    with st.container(border=True):
+        st.markdown(f"### 🗓️ Este mes ({_MONTHS_ES[today.month - 1]})")
+        if already_done:
+            st.success("✅ Ya hiciste lo de este mes. El mes que viene te aparecen los pasos nuevos.")
+            return
+
+        if not a.emergency_complete:
+            st.caption("Etapa: **completar el fondo de emergencia** — antes de invertir, tené un colchón para imprevistos.")
+        elif a.goal:
+            st.caption(f"Etapa: **ahorrar para {a.goal.name}**")
+
+        steps = []
+        if a.keep_in_mp_ars > 0:
+            steps.append(
+                f"Cuando cobres, dejá **{_ars(a.keep_in_mp_ars)}** en Mercado Pago para el fondo de emergencia "
+                f"(vas a tener {_ars(a.emergency_after_ars)} de {_ars(a.emergency_target_ars)})."
+            )
+        if a.transfer_ars > 0:
+            from_salary = a.transfer_ars - a.excess_mp_ars
+            detail = (
+                f" ({_ars(from_salary)} del sueldo + {_ars(a.excess_mp_ars)} que te sobran en Mercado Pago)"
+                if a.excess_mp_ars > 0 and from_salary > 0 else ""
+            )
+            steps.append(
+                f"Transferí **{_ars(a.transfer_ars)}** a IOL{detail}. En IOL: *Ingresar dinero* → "
+                "transferencia desde Mercado Pago."
+            )
+            steps.append(f"En IOL, comprá **dólar MEP** con esos pesos. Te quedan unos **{_usd(a.transfer_usd)}**.")
+            if a.goal and a.instrument:
+                steps.append(
+                    f"Con esos dólares comprá **{a.instrument.name}** ({a.instrument.examples}) "
+                    f"para *{a.goal.name}*."
+                )
+            else:
+                steps.append("Ya cubriste todas tus metas 🎉. Agregá una nueva en la tabla de metas.")
+        else:
+            steps.append("Este mes no hace falta pasar nada a IOL.")
+        steps.append("Tocá **✅ Ya lo hice** acá abajo y tus números se actualizan solos.")
+        st.markdown(_md("\n".join(f"{i}. {step}" for i, step in enumerate(steps, 1))))
+
+        if a.instrument and "ONs" in a.instrument.name and a.transfer_ars > 0:
+            st.caption(
+                "💡 Algunas ONs piden un mínimo de compra. Si todavía no llegás, comprá el fondo en dólares "
+                "y pasalo a la ON cuando alcances el mínimo."
+            )
+
+        if a.goal and a.emergency_complete:
+            after = a.goal_saved_usd + a.transfer_usd
+            st.progress(
+                min(after / a.goal.target_usd, 1.0),
+                text=_md(f"{a.goal.name}: {_usd(after)} de {_usd(a.goal.target_usd)} después de este mes"),
+            )
+            if after >= a.goal.target_usd:
+                st.success(
+                    f"¡Con esto completás **{a.goal.name}**! Cuando la uses, tildala como *Cumplida* "
+                    "en la tabla de metas."
+                )
+
+        st.button(
+            "✅ Ya lo hice",
+            type="primary",
+            on_click=_apply_month,
+            args=(a.keep_in_mp_ars, a.excess_mp_ars, a.transfer_usd, month_key),
+        )
 
 
 def _render_plan(cfg: GoalsConfig, mep: float) -> None:

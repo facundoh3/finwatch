@@ -16,6 +16,7 @@ from core.services.goals_service import (
     plan_by_goal,
     project,
     save_goals,
+    this_month,
 )
 
 MEP = 1000.0
@@ -131,3 +132,45 @@ def test_plan_allocates_savings_and_extra_income_by_urgency():
 def test_plan_needs_nothing_when_savings_cover_everything():
     plan = plan_by_goal(_cfg(savings_usd=50_000, goals=[Goal("Auto", 12_000, 2)]), MEP)
     assert plan.monthly_usd == 0
+
+
+def test_done_goals_are_ignored_everywhere():
+    cfg = _cfg(goals=[Goal("Auto", 6_000, 1, done=True), Goal("Casa", 6_000, 2)])
+    assert [g.name for g in all_goals(cfg, MEP)] == ["Casa"]
+    assert project(cfg, MEP).results[0].month == 12
+    assert this_month(cfg, MEP).goal.name == "Casa"
+
+
+def test_this_month_completes_emergency_fund_first():
+    # fondo = 3 × 500k = 1,5M; tiene 1,2M → faltan 300k de los 500k que ahorra
+    a = this_month(_cfg(emergency_months=3, savings_ars=1_200_000, goals=[Goal("Auto", 12_000, 2)]), MEP)
+    assert a.keep_in_mp_ars == 300_000
+    assert a.transfer_ars == 200_000 and a.transfer_usd == 200
+    assert a.emergency_complete
+
+
+def test_this_month_keeps_everything_while_fund_is_far():
+    a = this_month(_cfg(emergency_months=3, savings_ars=0, goals=[Goal("Auto", 12_000, 2)]), MEP)
+    assert a.keep_in_mp_ars == 500_000 and a.transfer_ars == 0
+    assert not a.emergency_complete
+
+
+def test_this_month_moves_excess_pesos_to_iol():
+    a = this_month(_cfg(emergency_months=1, savings_ars=2_000_000, goals=[Goal("Auto", 12_000, 2)]), MEP)
+    assert a.keep_in_mp_ars == 0
+    assert a.excess_mp_ars == 1_500_000
+    assert a.transfer_ars == 2_000_000
+
+
+def test_this_month_picks_next_goal_once_dollars_cover_the_first():
+    cfg = _cfg(savings_usd=13_000, goals=[Goal("Casa", 30_000, 7), Goal("Auto", 12_000, 2)])
+    a = this_month(cfg, MEP)
+    assert a.goal.name == "Casa"
+    assert a.goal_saved_usd == 1_000
+    assert a.instrument == instrument_for(7)
+
+
+def test_this_month_without_pending_goals():
+    a = this_month(_cfg(goals=[Goal("Auto", 12_000, 2, done=True)]), MEP)
+    assert a.goal is None and a.instrument is None
+    assert a.transfer_ars == 500_000
