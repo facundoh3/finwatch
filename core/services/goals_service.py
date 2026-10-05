@@ -17,6 +17,7 @@ class Goal:
     name: str
     target_usd: float
     years: float | None = None  # plazo deseado; None = sin fecha
+    done: bool = False  # cumplida (ej: auto ya comprado) — se ignora en los cálculos
 
 
 @dataclass(frozen=True)
@@ -48,6 +49,7 @@ class GoalsConfig:
     extra_income_months: int = 1
     annual_return: float = 0.07
     emergency_months: int = 3
+    last_done_month: str = ""  # "AAAA-MM" del último "Ya lo hice" en Este mes
     goals: list[Goal] = field(default_factory=lambda: [
         Goal("Auto usado", 12_000, 2),
         Goal("Anticipo casa", 30_000, 6),
@@ -101,8 +103,8 @@ def emergency_fund_usd(cfg: GoalsConfig, mep: float) -> float:
 
 
 def all_goals(cfg: GoalsConfig, mep: float) -> list[Goal]:
-    """El fondo de emergencia siempre va primero."""
-    goals = list(cfg.goals)
+    """El fondo de emergencia siempre va primero; las metas cumplidas no cuentan."""
+    goals = [g for g in cfg.goals if not g.done]
     fund = emergency_fund_usd(cfg, mep)
     if fund > 0:
         months = f"{cfg.emergency_months} mes{'es' if cfg.emergency_months != 1 else ''}"
@@ -232,3 +234,62 @@ def plan_by_goal(cfg: GoalsConfig, mep: float) -> Plan:
         lo, hi = (lo, mid) if _simulate(rows, mid) else (mid, hi)
     _simulate(rows, hi)
     return Plan(rows, hi)
+
+
+def _pending_in_order(cfg: GoalsConfig) -> list[Goal]:
+    """Metas pendientes en el orden en que se financian: primero las de plazo más corto."""
+    pending = [g for g in cfg.goals if not g.done]
+    with_deadline = sorted((g for g in pending if g.years), key=lambda g: g.years)
+    return with_deadline + [g for g in pending if not g.years]
+
+
+@dataclass
+class MonthAction:
+    emergency_target_ars: float
+    keep_in_mp_ars: float  # ahorro de este mes que queda en Mercado Pago para el fondo
+    excess_mp_ars: float  # lo que sobra en Mercado Pago por encima del fondo
+    transfer_ars: float  # total a pasar a IOL este mes
+    transfer_usd: float
+    goal: Goal | None  # meta en curso; None = todas cubiertas
+    goal_saved_usd: float  # lo que ya hay en IOL para la meta en curso
+    instrument: Instrument | None
+    emergency_after_ars: float  # fondo de emergencia después de este mes
+
+    @property
+    def emergency_complete(self) -> bool:
+        return self.emergency_after_ars >= self.emergency_target_ars
+
+
+def this_month(cfg: GoalsConfig, mep: float) -> MonthAction:
+    """
+    Qué hacer con el ahorro de este mes. Modelo: los pesos en Mercado Pago son el
+    fondo de emergencia y los dólares en IOL son el ahorro para las metas.
+    """
+    target = cfg.expenses_ars * cfg.emergency_months
+    missing = max(target - cfg.savings_ars, 0.0)
+    excess = max(cfg.savings_ars - target, 0.0)
+    keep = min(cfg.monthly_savings_ars, missing)
+    transfer_ars = cfg.monthly_savings_ars - keep + excess
+
+    goal, saved, remaining = None, 0.0, cfg.savings_usd
+    for g in _pending_in_order(cfg):
+        if remaining < g.target_usd:
+            goal, saved = g, remaining
+            break
+        remaining -= g.target_usd
+
+    instrument = None
+    if goal:
+        instrument = instrument_for(goal.years) if goal.years else _INSTRUMENTS_BY_HORIZON[0][1]
+
+    return MonthAction(
+        emergency_target_ars=target,
+        keep_in_mp_ars=keep,
+        excess_mp_ars=excess,
+        transfer_ars=transfer_ars,
+        transfer_usd=transfer_ars / mep if mep else 0.0,
+        goal=goal,
+        goal_saved_usd=saved,
+        instrument=instrument,
+        emergency_after_ars=min(cfg.savings_ars + keep, target),
+    )
