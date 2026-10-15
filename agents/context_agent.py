@@ -68,6 +68,8 @@ async def run(
             filtered_news = [NewsItem.model_validate(n) for n in cached_news]
             logger.info(f"Noticias: cache {'fin de semana' if is_weekend else f'cierre {close_date}'} ({len(filtered_news)} items)")
 
+    fundamentals_task = asyncio.create_task(_fetch_fundamentals(tickers_usa, settings, cache))
+    institutional_task = asyncio.create_task(_fetch_institutional(tickers_usa, settings, cache))
     if filtered_news is None:
         news_items = await _fetch_all_news(tickers_usa, settings, actual_hours)
         filtered_news, technical_summary = await asyncio.gather(
@@ -78,6 +80,8 @@ async def run(
             cache.set(news_key, [n.model_dump(mode="json") for n in filtered_news])
     else:
         technical_summary = await _enrich_with_technicals(market_overview, tickers_usa)
+    fundamentals = await fundamentals_task
+    institutional_summary = await institutional_task
 
     news_collection = NewsCollection(
         items=filtered_news,
@@ -90,7 +94,38 @@ async def run(
         market=market_overview,
         query_tickers=all_tickers,
         technical_summary=technical_summary,
+        fundamentals=fundamentals,
+        institutional_summary=institutional_summary,
     )
+
+
+async def _fetch_institutional(tickers_usa: list[str], settings: Settings, cache: CacheService | None) -> str:
+    """Qué tiene Berkshire de los tickers analizados, según su último 13F."""
+    from core.services.fundamentals_service import valid_user_agent
+    from core.services.institutional_service import BERKSHIRE_CIK, get_fund_holdings, summarize_for
+
+    if not valid_user_agent(settings.sec_user_agent):
+        return ""
+    try:
+        fund = await asyncio.wait_for(get_fund_holdings(BERKSHIRE_CIK, settings.sec_user_agent, cache), timeout=45.0)
+        return summarize_for(tickers_usa, fund) if fund else ""
+    except Exception as e:
+        logger.warning(f"13F Berkshire no disponible: {e}")
+        return ""
+
+
+async def _fetch_fundamentals(tickers_usa: list[str], settings: Settings, cache: CacheService | None) -> dict:
+    from core.services.fundamentals_service import get_fundamentals, valid_user_agent
+
+    if not valid_user_agent(settings.sec_user_agent):
+        return {}
+    try:
+        result = await get_fundamentals(tickers_usa, settings.sec_user_agent, cache)
+        logger.info(f"Fundamentos SEC: {len(result)}/{len(tickers_usa)} tickers con datos")
+        return result
+    except Exception as e:
+        logger.warning(f"Fundamentos SEC fallidos: {e}")
+        return {}
 
 
 async def _fetch_market_data(

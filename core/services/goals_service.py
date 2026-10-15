@@ -50,6 +50,8 @@ class GoalsConfig:
     annual_return: float = 0.07
     emergency_months: int = 3
     last_done_month: str = ""  # "AAAA-MM" del último "Ya lo hice" en Este mes
+    stocks_max_pct: float = 0.10  # tope total en acciones, sobre todo el ahorro
+    stock_position_max_pct: float = 0.25  # tope por acción, sobre el bolsillo de acciones
     goals: list[Goal] = field(default_factory=lambda: [
         Goal("Auto usado", 12_000, 2),
         Goal("Anticipo casa", 30_000, 6),

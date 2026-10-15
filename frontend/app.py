@@ -152,6 +152,12 @@ def _check_settings():
         issues.append("⚠️ **FINNHUB_API_KEY** no configurada — datos de mercado limitados")
     if not s.marketaux_api_key:
         issues.append("⚠️ **MARKETAUX_API_KEY** no configurada — menos fuentes de noticias")
+    from core.services.fundamentals_service import valid_user_agent
+    if not valid_user_agent(s.sec_user_agent):
+        issues.append(
+            "💡 **SEC_USER_AGENT** no configurado — sin esto no se ven los números de las empresas ni qué compran los "
+            "grandes fondos. Agregá al .env: `SEC_USER_AGENT=Tu Nombre tu@email.com` (la SEC pide nombre y email, es gratis)"
+        )
     if not (s.iol_username and s.iol_password):
         issues.append("💡 **IOL_USERNAME / IOL_PASSWORD** no configurados — sin estas credenciales los precios del mercado argentino (BCBA) vienen de fuentes menos confiables")
     return issues
@@ -353,7 +359,9 @@ def main():
 
     st.divider()
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["💡 Recomendaciones", "📊 Precios", "📰 Noticias", "💼 Mi Portafolio", "🎯 Metas"])
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
+        ["💡 Recomendaciones", "📊 Precios", "📰 Noticias", "💼 Mi Portafolio", "🎯 Metas", "🏦 Grandes fondos"]
+    )
 
     with tab1:
         _render_recomendaciones(displayed_recs, ctx)
@@ -365,7 +373,10 @@ def main():
         _render_portfolio_tab(recs, ctx)
     with tab5:
         from frontend.components.goals_tab import render_goals_tab
-        render_goals_tab()
+        render_goals_tab(_load_portfolio())
+    with tab6:
+        from frontend.components.funds_tab import render_funds_tab
+        render_funds_tab()
 
 
 def _compute_diff(old_recs, new_recs) -> dict:
@@ -407,6 +418,36 @@ def _render_technicals(ticker: str, snap) -> None:
     cols = st.columns(3)
     for i, sig in enumerate(report.signals):
         cols[i % 3].caption(f"{sig.icon} **{sig.name}** — {sig.detail}")
+
+
+def _render_fundamentals(fund) -> None:
+    if fund is None:
+        return
+    from core.services.fundamentals_service import fundamental_signals
+
+    signals = fundamental_signals(fund)
+    ok = sum(s.ok for s in signals)
+    color = "#1a4a1a" if ok == len(signals) else "#4a3a00" if ok else "#4a1010"
+    derived = " · Q4 calculado del balance anual" if fund.derived else ""
+    st.markdown(
+        f"<div style='background:{color};color:#fff;padding:6px 12px;border-radius:6px;margin:4px 0'>"
+        f"<b>Números de la empresa (SEC): {ok}/{len(signals)} O'Neil · {fund.fiscal or ''} "
+        f"(cierre {fund.period_end}){derived}</b></div>",
+        unsafe_allow_html=True,
+    )
+    cols = st.columns(3)
+    for i, sig in enumerate(signals):
+        cols[i].caption(f"{sig.icon} **{sig.name}** — {sig.detail}".replace("$", "\\$"))
+    extras = []
+    if fund.revenue is not None:
+        extras.append(f"ventas del trimestre US\\${fund.revenue / 1e9:,.1f} mil millones")
+    if fund.eps is not None:
+        extras.append(f"ganancia por acción US\\${fund.eps:.2f}")
+    if fund.net_margin is not None:
+        extras.append(f"margen neto {fund.net_margin:.0f}%")
+    if extras:
+        text = " · ".join(extras)
+        st.caption(text[0].upper() + text[1:])
 
 
 def _show_welcome():
@@ -493,6 +534,7 @@ def _render_recomendaciones(recs, ctx):
                 st.info(f"⏳ {display['wait_info']}")
 
             _render_technicals(rec.ticker, snap)
+            _render_fundamentals(ctx.fundamentals.get(rec.ticker))
 
             if rec.sources:
                 st.markdown("**Fuentes:**")
@@ -540,10 +582,36 @@ def _render_position_summary(ticker: str, pos: dict, snap):
         st.info(f"⬇️ Bajó {snap.change_pct:.1f}% hoy — si el análisis sigue siendo positivo, podría ser un buen momento para sumar.")
 
 
+def _stock_limits(ticker: str):
+    """(presupuesto, máximo para este ticker) según el plan de Metas, o None si Metas no está configurado."""
+    from core.services.goals_service import load_goals
+    from core.services.risk_service import max_for_ticker, stock_budget
+    from frontend.components.goals_tab import current_mep
+
+    cfg = load_goals()
+    if cfg.income_ars <= 0:
+        return None
+    portfolio = _load_portfolio()
+    budget = stock_budget(cfg, portfolio, current_mep())
+    return budget, max_for_ticker(budget, portfolio, ticker)
+
+
 def _render_buy_form(ticker: str, snap=None, _idx: int = 0):
+    from core.services.risk_service import check_buy
     from core.services.technical_service import calc_stop_loss
+    from frontend.components.goals_tab import current_mep
+
     _k = f"{ticker}_{_idx}"
+    limits = _stock_limits(ticker)
     with st.expander(f"📥 Registrar compra de {ticker}"):
+        if limits is None:
+            st.caption("💡 Configurá 🎯 Metas y la app te va a decir cuánto podés poner en acciones sin tocar tus metas.")
+        elif not limits[0].emergency_ok:
+            st.warning("⚠️ Según tu plan, todavía no deberías comprar acciones: primero completá el fondo de emergencia.")
+        else:
+            from core.services.risk_service import ars
+            st.info(f"📏 Según tu plan, en {ticker} podés poner hasta **{ars(limits[1])}**.".replace("$", "\\$"))
+
         default_price = float(snap.current_price) if snap else 0.0
         buy_price = st.number_input(
             "Precio de compra por acción (USD)",
@@ -558,7 +626,7 @@ def _render_buy_form(ticker: str, snap=None, _idx: int = 0):
         )
         usd_rate = st.number_input(
             "Tipo de cambio ARS/USD al momento de la compra",
-            min_value=1.0, value=1050.0, step=10.0, key=f"rate_{_k}",
+            min_value=1.0, value=float(round(current_mep())), step=10.0, key=f"rate_{_k}",
         )
         days_to_hold = st.slider(
             "¿Cuántos días pensás mantenerla?",
@@ -567,9 +635,14 @@ def _render_buy_form(ticker: str, snap=None, _idx: int = 0):
         if ars_amount > 0 and usd_rate > 0:
             st.caption(f"≈ ${ars_amount / usd_rate:.0f} USD invertidos")
 
-        if st.button(f"✅ Guardar compra de {ticker}", key=f"save_{_k}"):
+        problems = check_buy(limits[0], _load_portfolio(), ticker, float(ars_amount)) if limits and ars_amount > 0 else []
+        confirmed = True
+        if problems:
+            st.warning("**Esta compra se pasa de tu plan:**\n" + "\n".join(f"- {p}" for p in problems).replace("$", "\\$"))
+            confirmed = st.checkbox("Ya la hice (o la quiero hacer igual): registrarla de todos modos", key=f"force_{_k}")
+
+        if st.button(f"✅ Guardar compra de {ticker}", key=f"save_{_k}", disabled=not confirmed):
             if ars_amount > 0:
-                from core.services.technical_service import calc_stop_loss
                 p = _load_portfolio()
                 p[ticker] = {
                     "ars_amount": float(ars_amount),

@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     alpha_vantage_api_key: str = ""
     iol_username: str = ""
     iol_password: str = ""
+    sec_user_agent: str = ""  # "Nombre Apellido tu@email.com" — la SEC lo exige para usar EDGAR
 
     cache_ttl_minutes: int = 30
     news_hours_back: int = 24
