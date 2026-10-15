@@ -3,6 +3,7 @@ from enum import Enum
 
 from pydantic import BaseModel, Field, field_validator
 
+from core.models.fundamentals import FundamentalSnapshot
 from core.models.market import MarketOverview
 from core.models.news import NewsCollection
 
@@ -116,6 +117,14 @@ class AgentContext(BaseModel):
         default="",
         description="Checklist técnico determinístico (Weinstein/O'Neil) por ticker, calculado sin LLM — no es texto generado por el modelo.",
     )
+    fundamentals: dict[str, FundamentalSnapshot] = Field(
+        default_factory=dict,
+        description="Números reportados a la SEC por ticker (solo empresas en us-gaap).",
+    )
+    institutional_summary: str = Field(
+        default="",
+        description="Movimientos de grandes fondos (13F) en los tickers analizados.",
+    )
     timestamp: datetime = Field(default_factory=datetime.utcnow)
 
     def to_claude_prompt_block(self) -> str:
@@ -127,6 +136,11 @@ class AgentContext(BaseModel):
         news_bullets = self.news.to_context_bullets()
         market_block = self.market.to_context_block()
         tech_block = self.technical_summary or "Sin datos técnicos disponibles para estos tickers."
+        from core.services.fundamentals_service import format_line
+        fund_block = "\n".join(format_line(f) for f in self.fundamentals.values()) or (
+            "Sin datos de la SEC (no configurado, o son ETFs/ADRs extranjeros)."
+        )
+        inst_block = f"\n\nGRANDES FONDOS (13F, datos con 45+ días de atraso):\n{self.institutional_summary}" if self.institutional_summary else ""
 
         return f"""TICKERS A ANALIZAR: {tickers_str}
 
@@ -135,6 +149,9 @@ PRECIOS ACTUALES:
 
 ANÁLISIS TÉCNICO (Weinstein Stage + checklist O'Neil — dato real ya calculado, NO inventes soportes/resistencias que no estén acá):
 {tech_block}
+
+FUNDAMENTOS (reportados a la SEC — crecimiento a/a del último trimestre y del último año fiscal):
+{fund_block}{inst_block}
 
 NOTICIAS RELEVANTES (últimas {self.news.hours_back}hs):
 {news_bullets}

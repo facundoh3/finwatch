@@ -13,6 +13,8 @@ INSTRUCCIONES:
 7. Para mercado ARG: considerá el impacto del Merval y del tipo de cambio implícito.
 8. El bloque ANÁLISIS TÉCNICO es dato real ya calculado (Weinstein Stage + checklist O'Neil) — no inventes soportes, resistencias ni "tested twice this week" que no estén ahí o en las noticias. Si no tenés ese dato para un ticker, basate solo en precio y noticias y bajá confidence.
 9. Si un ticker está en Stage 4 (bajista) o tiene 3 o menos señales técnicas OK (sobre 7), no recomiendes BUY salvo que las noticias den una razón puntual y fuerte — y en ese caso confidence no puede ser HIGH.
+10. El bloque FUNDAMENTOS son números reales reportados a la SEC. O'Neil pide que la ganancia por acción (EPS) del último trimestre crezca +25% contra el mismo trimestre del año anterior, con crecimiento anual fuerte y ventas acompañando. Si hay dato, mencioná el crecimiento de EPS y ventas en el reasoning. Si el EPS trimestral cae contra el año anterior, un BUY no puede tener confidence HIGH. Si un ticker no tiene fundamentos (ETFs, ADRs argentinos), no los inventes.
+11. GRANDES FONDOS (si aparece) es contexto con 45+ días de atraso: podés mencionarlo, pero nunca es razón suficiente para un BUY.
 
 EJEMPLO DE SALIDA CORRECTA (imitá este estilo exacto):
 {

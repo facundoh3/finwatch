@@ -73,6 +73,8 @@ def _init_state(cfg: GoalsConfig, mep_live: float | None) -> None:
         "g_return_pct": round(cfg.annual_return * 100, 1),
         "g_emergency": int(cfg.emergency_months),
         "g_last_done": cfg.last_done_month,
+        "g_stocks_pct": int(round(cfg.stocks_max_pct * 100)),
+        "g_position_pct": int(round(cfg.stock_position_max_pct * 100)),
         "g_goals_base": pd.DataFrame(
             [{"Meta": g.name, "Monto USD": g.target_usd, "Plazo (años)": g.years, "Cumplida": g.done}
              for g in cfg.goals],
@@ -82,7 +84,12 @@ def _init_state(cfg: GoalsConfig, mep_live: float | None) -> None:
     })
 
 
-def render_goals_tab() -> None:
+def current_mep() -> float:
+    """El MEP que se usa en Metas (el que cargaste o el de IOL), para otras pestañas."""
+    return float(st.session_state.get("g_mep") or _fetch_mep() or _DEFAULT_MEP)
+
+
+def render_goals_tab(portfolio: dict | None = None) -> None:
     import pandas as pd
 
     cfg = load_goals()
@@ -126,6 +133,15 @@ def render_goals_tab() -> None:
             help="Fondo en dólares ~3-5% · ONs corporativas ~6-8% · bonos del Estado ~10-11% (más riesgo)",
         ) / 100
         emergency_months = c8.slider("Fondo de emergencia (meses de gasto)", 0, 6, key="g_emergency")
+        c9, c10 = st.columns(2)
+        stocks_pct = c9.slider(
+            "Máximo en acciones (% de todo tu ahorro)", 0, 30, step=1, key="g_stocks_pct",
+            help="La plata del auto y la casa no va a acciones. Esto es un bolsillo chico para aprender y tomar riesgo.",
+        )
+        position_pct = c10.slider(
+            "Máximo en una sola acción (% del bolsillo)", 10, 100, step=5, key="g_position_pct",
+            help="Con 25% necesitás al menos 4 acciones distintas: si una se hunde, no te lleva todo.",
+        )
 
     st.markdown("**Metas (en orden de prioridad)**")
     edited = st.data_editor(
@@ -167,6 +183,8 @@ def render_goals_tab() -> None:
         annual_return=annual_return,
         emergency_months=emergency_months,
         last_done_month=st.session_state["g_last_done"],
+        stocks_max_pct=stocks_pct / 100,
+        stock_position_max_pct=position_pct / 100,
         goals=goals,
     )
     if new_cfg != cfg:
@@ -205,6 +223,7 @@ def render_goals_tab() -> None:
 
     _render_balance_chart(proj.balance_usd, proj.results, today)
     _render_plan(new_cfg, mep)
+    _render_stock_pocket(new_cfg, portfolio or {}, mep)
     _render_land_calculator()
 
 
@@ -329,6 +348,25 @@ def _render_plan(cfg: GoalsConfig, mep: float) -> None:
         "Rendimientos estimados en dólares, no garantizados. Los fondos y las ONs pueden bajar de precio "
         "en el corto plazo; por eso lo de corto plazo va en instrumentos más estables."
     )
+
+
+def _render_stock_pocket(cfg: GoalsConfig, portfolio: dict, mep: float) -> None:
+    from core.services.risk_service import stock_budget
+
+    b = stock_budget(cfg, portfolio, mep)
+    st.markdown("**📈 Bolsillo de acciones**")
+    if not b.emergency_ok:
+        st.info(
+            "Todavía no es momento de comprar acciones: primero completá el fondo de emergencia. "
+            "Cuando lo tengas, acá vas a ver cuánto podés poner en acciones sin tocar la plata de tus metas."
+        )
+        return
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric(f"Tope total ({cfg.stocks_max_pct:.0%} de tu ahorro)", _ars(b.cap_ars))
+    c2.metric("Ya invertido", _ars(b.invested_ars))
+    c3.metric("Disponible", _ars(b.available_ars))
+    c4.metric("Máximo por acción", _ars(b.per_stock_cap_ars))
+    st.caption("Cuando registres una compra en 💡 Recomendaciones, la app te avisa si te pasás de estos topes.")
 
 
 def _render_balance_chart(balances: list[float], results, today: date) -> None:
