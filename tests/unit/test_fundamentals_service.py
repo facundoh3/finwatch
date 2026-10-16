@@ -131,3 +131,27 @@ async def test_server_errors_are_skipped_and_retried_next_time(tmp_path):
     assert await get_fundamentals(["AAPL"], UA, cache) == {}
     await get_fundamentals(["AAPL"], UA, cache)
     assert route.call_count == 2  # un 503 no se cachea como "sin datos"
+
+
+def test_global_pacing_spaces_requests_across_clients():
+    from core.services.fundamentals_service import _reserve_slot
+
+    waits = [_reserve_slot(0.2) for _ in range(4)]
+    gaps = [b - a for a, b in zip(waits, waits[1:])]
+    assert all(abs(g - 0.2) < 0.01 for g in gaps)
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_403_stops_the_remaining_requests(tmp_path):
+    respx.get(TICKERS_URL).mock(return_value=httpx.Response(200, json={
+        "0": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."},
+        "1": {"cik_str": 21344, "ticker": "KO", "title": "Coca-Cola"},
+        "2": {"cik_str": 70858, "ticker": "BAC", "title": "Bank of America"},
+    }))
+    routes = [respx.get(FACTS_URL.format(cik=c)).mock(return_value=httpx.Response(403))
+              for c in ("0000320193", "0000021344", "0000070858")]
+    cache = CacheService(cache_dir=tmp_path)
+    assert await get_fundamentals(["AAPL", "KO", "BAC"], UA, cache) == {}
+    assert sum(r.call_count for r in routes) == 1  # después del primer 403 no se insiste
+    assert cache.get("sec_fund_none_AAPL") is None  # un bloqueo no se guarda como "sin datos"

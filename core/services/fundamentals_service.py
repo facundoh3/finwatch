@@ -12,6 +12,8 @@ presentan 20-F en IFRS (YPF, GGAL, BMA...) no tienen estos datos.
 """
 import asyncio
 import datetime as _dt
+import threading
+import time
 
 import httpx
 from loguru import logger
@@ -187,23 +189,52 @@ def format_line(f: FundamentalSnapshot) -> str:
 
 # ------------------------------------------------------------------- red
 
+# Un solo ritmo para toda la app: los fundamentos y los 13F corren en paralelo y la SEC
+# bloquea la IP unos minutos si pasan de 10 pedidos por segundo entre todos.
+_PACE_LOCK = threading.Lock()
+_next_slot = 0.0
+SEC_PAUSE = 0.2  # 5 pedidos por segundo como máximo
+
+
+def _reserve_slot(pause: float) -> float:
+    """Segundos a esperar para respetar el ritmo global (vale entre hilos y event loops)."""
+    global _next_slot
+    with _PACE_LOCK:
+        now = time.monotonic()
+        slot = max(now, _next_slot)
+        _next_slot = slot + pause
+        return slot - now
+
+
+class SECBlockedError(Exception):
+    """La SEC respondió 403: bloqueo temporal por exceso de pedidos o User-Agent rechazado."""
+
+
+SEC_BLOCKED_HELP = (
+    "La SEC rechazó el pedido (error 403). Suele ser un bloqueo temporal por demasiados pedidos seguidos "
+    "y se levanta solo en unos 10 minutos. Si sigue, revisá que SEC_USER_AGENT en tu .env tenga tu nombre "
+    "y tu email, por ejemplo: SEC_USER_AGENT=Facundo Perez facundo@gmail.com"
+)
+
+
 class SECClient:
     """SEC pide un User-Agent con nombre y email, y como mucho 10 pedidos por segundo."""
 
-    def __init__(self, user_agent: str, pause: float = 0.15):
+    def __init__(self, user_agent: str, pause: float = SEC_PAUSE):
         self._headers = {"User-Agent": user_agent, "Accept-Encoding": "gzip, deflate"}
         self._pause = pause
-        self._lock = asyncio.Lock()
-        self._last = 0.0
+        self.blocked = False  # después de un 403 no se insiste: seguir pidiendo alarga el bloqueo
 
     async def _get(self, client: httpx.AsyncClient, url: str) -> httpx.Response:
-        async with self._lock:
-            loop = asyncio.get_running_loop()
-            wait = self._pause - (loop.time() - self._last)
-            if wait > 0:
-                await asyncio.sleep(wait)
-            self._last = loop.time()
+        wait = _reserve_slot(self._pause)
+        if wait > 0:
+            await asyncio.sleep(wait)
+        if self.blocked:
+            raise SECBlockedError(SEC_BLOCKED_HELP)
         resp = await client.get(url, headers=self._headers)
+        if resp.status_code == 403:
+            self.blocked = True
+            raise SECBlockedError(SEC_BLOCKED_HELP)
         resp.raise_for_status()
         return resp
 
@@ -260,6 +291,8 @@ async def get_fundamentals(
             if cik:
                 try:
                     snap = analyze_facts(t, await sec.get_json(client, FACTS_URL.format(cik=cik)))
+                except SECBlockedError:
+                    return
                 except httpx.HTTPStatusError as e:
                     if e.response.status_code != 404:
                         logger.warning(f"SEC {t}: HTTP {e.response.status_code}")
@@ -280,4 +313,6 @@ async def get_fundamentals(
                 logger.warning(f"SEC: {task.exception()}")
         if late:
             logger.warning(f"SEC: {len(late)} tickers no llegaron en {timeout:.0f}s — quedan para el próximo análisis")
+        if sec.blocked:
+            logger.warning(f"SEC: {SEC_BLOCKED_HELP}")
     return out

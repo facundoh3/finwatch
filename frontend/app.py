@@ -618,10 +618,15 @@ def _render_buy_form(ticker: str, snap=None, _idx: int = 0):
             "¿Cuánto invertiste? (ARS)",
             min_value=0, step=1000, key=f"ars_{_k}",
         )
-        usd_rate = st.number_input(
-            "Tipo de cambio ARS/USD al momento de la compra",
-            min_value=1.0, value=float(round(current_mep())), step=10.0, key=f"rate_{_k}",
-        )
+        from frontend.components.goals_tab import live_mep
+        usd_rate = live_mep()
+        if usd_rate:
+            st.caption(_esc(f"💵 Dólar MEP de IOL: **${usd_rate:,.2f}**".replace(",", "X").replace(".", ",").replace("X", ".")))
+        else:
+            usd_rate = st.number_input(
+                "Dólar MEP (IOL no respondió, cargalo a mano)",
+                min_value=1.0, value=float(round(current_mep())), step=10.0, key=f"rate_{_k}",
+            )
         days_to_hold = st.slider(
             "¿Cuántos días pensás mantenerla?",
             1, 365, 30, key=f"days_{_k}",
