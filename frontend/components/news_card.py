@@ -3,13 +3,17 @@ import streamlit as st
 from core.models.news import NewsItem, SentimentLabel
 
 
+def _esc(text: str) -> str:
+    return (text or "").replace("$", "\\$")
+
+
 def render_news_card(news: NewsItem) -> None:
     """Card de noticia con sentimiento, impacto y fuente."""
     sentiment_color = {
-        SentimentLabel.POSITIVE: "#1a7a1a",
-        SentimentLabel.NEGATIVE: "#8a1a1a",
-        SentimentLabel.NEUTRAL: "#555",
-    }.get(news.sentiment_label, "#555")
+        SentimentLabel.POSITIVE: "green",
+        SentimentLabel.NEGATIVE: "red",
+        SentimentLabel.NEUTRAL: "gray",
+    }.get(news.sentiment_label, "gray")
 
     sentiment_label = {
         SentimentLabel.POSITIVE: "POSITIVO",
@@ -30,14 +34,11 @@ def render_news_card(news: NewsItem) -> None:
     with st.container(border=True):
         col1, col2 = st.columns([4, 1])
         with col1:
-            st.markdown(f"**{news.headline}**")
+            st.markdown(f"**{_esc(news.headline)}**")
             if news.summary:
-                st.caption(news.summary[:150] + "..." if len(news.summary) > 150 else news.summary)
+                st.caption(_esc(news.summary[:150] + "..." if len(news.summary) > 150 else news.summary))
         with col2:
-            st.markdown(
-                f"<span style='color:{sentiment_color};font-weight:bold'>{sentiment_label}</span>",
-                unsafe_allow_html=True,
-            )
+            st.markdown(f":{sentiment_color}[**{sentiment_label}**]")
 
         col_a, col_b, col_c = st.columns([2, 2, 2])
         with col_a:
@@ -49,7 +50,7 @@ def render_news_card(news: NewsItem) -> None:
                 st.markdown(f"[Ver noticia →]({news.url})")
 
         if news.impact_explanation:
-            st.info(f"💡 **Impacto**: {news.impact_explanation}")
+            st.info(_esc(f"💡 **Impacto**: {news.impact_explanation}"))
 
         if news.related_tickers:
             tickers_str = " ".join(f"`{t}`" for t in news.related_tickers[:5])

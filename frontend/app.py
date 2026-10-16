@@ -17,7 +17,7 @@ st.set_page_config(
     page_title="finwatch",
     page_icon="📈",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="auto",
 )
 
 _TICKERS_PATH = Path(__file__).parent.parent / "config" / "tickers.yaml"
@@ -96,45 +96,31 @@ def _run_async(coro):
     return asyncio.run(coro)
 
 
-def _sidebar(cfg: dict) -> tuple[list[str], bool]:
+def _age_str(saved_at: datetime) -> str:
+    secs = int((datetime.now() - saved_at).total_seconds())
+    h, m = secs // 3600, (secs % 3600) // 60
+    return f"{h}h {m}m" if h else f"{m}m"
+
+
+def _esc(text: str) -> str:
+    """Escapa "$" para que Streamlit no lo tome como fórmula LaTeX."""
+    return (text or "").replace("$", "\\$")
+
+
+def _sidebar() -> bool:
     st.sidebar.title("📈 finwatch")
-    st.sidebar.caption("Asistente personal de finanzas")
+    st.sidebar.caption("Tu asistente de ahorro e inversión")
     st.sidebar.divider()
-
-    # Filtro de vista (no controla el análisis — siempre se analizan todos)
-    all_tickers = sorted(set(
-        cfg.get("indices_usa", []) +
-        cfg.get("commodities", []) +
-        cfg.get("sectores_usa", []) +
-        cfg.get("acciones_usa", []) +
-        cfg.get("tickers_arg_adr", []) +
-        cfg.get("tickers_byma", [])
-    ))
-    view_filter = st.sidebar.multiselect(
-        "🔍 Filtrar tickers",
-        options=all_tickers,
-        default=[],
-        placeholder="Mostrar todos",
-        help="Solo filtra lo que se muestra — el análisis siempre corre sobre todos los tickers.",
+    force_refresh = st.sidebar.button(
+        "🔄 Analizar ahora", width="stretch",
+        help="Actualiza precios, noticias y recomendaciones (tarda unos 30 segundos).",
     )
-
-    st.sidebar.divider()
-    force_refresh = st.sidebar.button("🔄 Analizar ahora", width="stretch")
+    if "analysis_age" in st.session_state:
+        st.sidebar.caption(f"Último análisis: hace {_age_str(st.session_state['analysis_age'])}")
     st.sidebar.divider()
     _render_market_clock()
-    _render_news_cache_status()
-    _render_tracker_stats()
     _render_economic_calendar()
-    try:
-        from config.settings import get_settings as _gs
-        _s = _gs()
-        _consensus = "Groq + DeepSeek" if (_s.groq_api_key and _s.deepseek_api_key) else "Groq + OpenRouter" if (_s.groq_api_key and _s.openrouter_api_key) else "Groq solo"
-    except Exception:
-        _consensus = "IA"
-    st.sidebar.caption(f"IA: {_consensus} · fallback Claude")
-    _render_iol_status()
-
-    return view_filter, force_refresh
+    return force_refresh
 
 
 def _check_settings():
@@ -171,9 +157,9 @@ def _iol_connected() -> bool:
 
 def _render_iol_status():
     if _iol_connected():
-        st.sidebar.caption("🏦 IOL: conectado — precios BCBA en tiempo real")
+        st.caption("🏦 IOL: conectado — precios BCBA en tiempo real")
     else:
-        st.sidebar.caption("🏦 IOL: no configurado — agregá IOL_USERNAME/IOL_PASSWORD al .env")
+        st.caption("🏦 IOL: no configurado — agregá IOL_USERNAME/IOL_PASSWORD al .env")
 
 
 def _render_news_cache_status():
@@ -183,9 +169,9 @@ def _render_news_cache_status():
         mins = minutes_until_next_close()
         if mins is not None:
             h, m = divmod(mins, 60)
-            st.sidebar.caption(f"📰 Noticias: cierre {close_date} · actualiza en {h}h {m:02d}m")
+            st.caption(f"📰 Noticias: cierre {close_date} · actualiza en {h}h {m:02d}m")
         else:
-            st.sidebar.caption(f"📰 Noticias: cierre {close_date}")
+            st.caption(f"📰 Noticias: cierre {close_date}")
     except Exception:
         pass
 
@@ -195,7 +181,7 @@ def _render_tracker_stats():
         from core.services.tracker_service import get_accuracy_stats
         stats = get_accuracy_stats()
         if stats["total"] == 0:
-            st.sidebar.caption(f"🎯 Tracker: sin historial aún · {stats.get('pending', 0)} pendientes")
+            st.caption(f"🎯 Tracker: sin historial aún · {stats.get('pending', 0)} pendientes")
             return
         acc = stats["accuracy"]
         by_action = stats.get("by_action", {})
@@ -203,9 +189,9 @@ def _render_tracker_stats():
         for action, s in by_action.items():
             parts.append(f"{action} {s['pct']}%")
         detail = " · ".join(parts) if parts else ""
-        st.sidebar.caption(f"🎯 Precisión: {acc}% ({stats['correct']}/{stats['total']}) — {detail}")
+        st.caption(f"🎯 Precisión: {acc}% ({stats['correct']}/{stats['total']}) — {detail}")
         if not stats.get("reliable", False):
-            st.sidebar.caption("⚠️ Muestra chica — no tomar este % como precisión real todavía")
+            st.caption("⚠️ Muestra chica — no tomar este % como precisión real todavía")
     except Exception:
         pass
 
@@ -263,9 +249,20 @@ def _render_market_clock():
 
 
 def main():
-    cfg = _load_tickers_config()
-    view_filter, force_refresh = _sidebar(cfg)
+    from frontend.components.funds_tab import render_funds_tab  # noqa: F401  (import temprano: falla rápido si falta algo)
+    from frontend.components.goals_tab import (
+        build_cfg,
+        current_mep,
+        init_plan_state,
+        render_goals_editor,
+        render_numbers,
+        render_plan_body,
+    )
+    from frontend.components.home_tab import render_home
+    from frontend.components.style import inject_css
 
+    inject_css()
+    cfg = _load_tickers_config()
     # Todos los tickers del yaml — el análisis siempre corre sobre todos
     tickers_usa = (
         cfg.get("indices_usa", []) +
@@ -283,16 +280,7 @@ def main():
             st.session_state["analysis_result"] = (ctx_cached, recs_cached)
             st.session_state["analysis_age"] = saved_at
 
-    st.title("📈 finwatch")
-    st.caption("Tu asistente personal de finanzas — mercados USA y Argentina")
-
-    issues = _check_settings()
-    if issues:
-        with st.expander("⚙️ Configuración incompleta", expanded=True):
-            for issue in issues:
-                st.markdown(issue)
-            st.info("Editá `.env` con tus API keys y reiniciá la app.")
-
+    force_refresh = _sidebar()
     if force_refresh:
         with st.spinner("Analizando mercados... (~30 segundos)"):
             try:
@@ -318,65 +306,120 @@ def main():
                     st.session_state.pop("analysis_diff", None)
             except Exception as e:
                 st.error(f"Error al ejecutar el análisis: {e}")
-                return
 
-    if "analysis_result" not in st.session_state:
-        _show_welcome()
-        st.info("Hacé clic en **🔄 Analizar ahora** para comenzar.")
-        return
+    analysis = st.session_state.get("analysis_result")
+    issues = _check_settings()
+    portfolio = _load_portfolio()
 
-    ctx, recs = st.session_state["analysis_result"]
+    tab_home, tab_plan, tab_learn, tab_settings = st.tabs(["🏠 Inicio", "🎯 Mi plan", "📚 Aprender", "⚙️ Ajustes"])
+    # Ajustes y la tabla de metas se dibujan primero porque Inicio necesita sus valores.
+    init_plan_state()
+    with tab_settings:
+        render_numbers()
+    with tab_plan:
+        goals = render_goals_editor()
+    plan_cfg = build_cfg(goals)
+    mep = current_mep()
 
-    # Aplicar filtro de vista sin tocar los datos del análisis
+    with tab_home:
+        render_home(plan_cfg, mep, portfolio, analysis, needs_setup=any(i.startswith("❌") for i in issues))
+    with tab_plan:
+        render_plan_body(plan_cfg, mep, portfolio)
+    with tab_learn:
+        _render_learn(analysis, cfg)
+    with tab_settings:
+        _render_settings_status(issues)
+
+
+_NO_ANALYSIS = (
+    "Todavía no hay un análisis del mercado. Tocá **🔄 Analizar ahora** en el menú lateral "
+    "(en el celular, se abre con la flechita de arriba a la izquierda)."
+)
+
+
+def _render_learn(analysis, tickers_cfg: dict) -> None:
+    from frontend.components.funds_tab import render_funds_tab
+
+    st.caption(
+        "Todo el detalle para aprender: recomendaciones, gráficos, noticias y qué compran los grandes fondos. "
+        "Tu plan de ahorro no depende de nada de esto."
+    )
+    ctx, recs = analysis if analysis else (None, None)
+    ideas, pocket, charts, news, funds = st.tabs(["💡 Ideas", "💼 Mi bolsillo", "📊 Gráficos", "📰 Noticias", "🏦 Grandes fondos"])
+    displayed = recs
+    with ideas:
+        if recs is None:
+            st.info(_NO_ANALYSIS)
+        else:
+            displayed = _render_ideas(ctx, recs, tickers_cfg)
+    with pocket:
+        _render_portfolio_tab(recs, ctx)
+    with charts:
+        if ctx is None:
+            st.info(_NO_ANALYSIS)
+        else:
+            _render_precios(ctx, displayed)
+    with news:
+        if ctx is None:
+            st.info(_NO_ANALYSIS)
+        else:
+            _render_noticias(ctx)
+    with funds:
+        render_funds_tab()
+
+
+def _render_ideas(ctx, recs, tickers_cfg: dict):
     from core.models.recommendation import RecommendationSet
+
+    if "analysis_age" in st.session_state:
+        st.caption(f"Análisis de hace {_age_str(st.session_state['analysis_age'])} · se actualiza con 🔄 Analizar ahora")
+    if recs.market_summary:
+        st.info(_esc(f"**El mercado hoy:** {recs.market_summary}"))
+
+    all_tickers = sorted(set(sum((tickers_cfg.get(k, []) for k in (
+        "indices_usa", "commodities", "sectores_usa", "acciones_usa", "tickers_arg_adr", "tickers_byma")), [])))
+    view_filter = st.multiselect(
+        "🔍 Ver solo estos tickers", options=all_tickers, default=[], placeholder="Todos",
+        help="Solo filtra lo que se muestra; el análisis siempre corre sobre todos.",
+    )
+    displayed = recs
     if view_filter:
-        view_set = set(view_filter)
-        displayed_recs = RecommendationSet(
-            recommendations=[r for r in recs.recommendations if r.ticker in view_set],
+        displayed = RecommendationSet(
+            recommendations=[r for r in recs.recommendations if r.ticker in set(view_filter)],
             market_summary=recs.market_summary,
             generated_at=recs.generated_at,
         )
-    else:
-        displayed_recs = recs
 
-    if "analysis_age" in st.session_state:
-        age = datetime.now() - st.session_state["analysis_age"]
-        h = int(age.total_seconds()) // 3600
-        m = (int(age.total_seconds()) % 3600) // 60
-        age_str = f"{h}h {m}m" if h > 0 else f"{m}m"
-        st.caption(f"📊 Análisis de hace {age_str} · Hacé clic en 🔄 para actualizar (se auto-renueva a las {_ANALYSIS_TTL_HOURS}hs)")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("✅ Comprar", len(displayed.by_action("BUY")))
+    c2.metric("⏳ Esperar", len(displayed.by_action("WAIT")))
+    c3.metric("❌ No comprar", len(displayed.by_action("AVOID")))
+    _render_tracker_stats()
+    _render_recomendaciones(displayed, ctx)
+    return displayed
 
-    _render_portfolio_banner(recs, ctx)
 
-    if recs.market_summary:
-        st.info(f"**Panorama del mercado hoy:** {recs.market_summary}")
-
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("✅ Comprar", len(displayed_recs.by_action("BUY")))
-    col2.metric("⏳ Esperar", len(displayed_recs.by_action("WAIT")))
-    col3.metric("❌ Evitar", len(displayed_recs.by_action("AVOID")))
-    col4.metric("📰 Noticias", len(ctx.news.items))
-
+def _render_settings_status(issues: list[str]) -> None:
     st.divider()
-
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
-        ["💡 Recomendaciones", "📊 Precios", "📰 Noticias", "💼 Mi Portafolio", "🎯 Metas", "🏦 Grandes fondos"]
-    )
-
-    with tab1:
-        _render_recomendaciones(displayed_recs, ctx)
-    with tab2:
-        _render_precios(ctx, displayed_recs)
-    with tab3:
-        _render_noticias(ctx)
-    with tab4:
-        _render_portfolio_tab(recs, ctx)
-    with tab5:
-        from frontend.components.goals_tab import render_goals_tab
-        render_goals_tab(_load_portfolio())
-    with tab6:
-        from frontend.components.funds_tab import render_funds_tab
-        render_funds_tab()
+    st.markdown("#### 🔌 Conexiones")
+    if issues:
+        for issue in issues:
+            st.markdown(issue)
+        st.caption("Se configuran en el archivo `.env`. Después de cambiarlo, reiniciá la app.")
+    else:
+        st.success("Todo configurado ✅")
+    try:
+        from config.settings import get_settings
+        s = get_settings()
+        consensus = (
+            "Groq + DeepSeek" if (s.groq_api_key and s.deepseek_api_key)
+            else "Groq + OpenRouter" if (s.groq_api_key and s.openrouter_api_key) else "Groq solo"
+        )
+        st.caption(f"🤖 IA: {consensus} · respaldo Claude")
+    except Exception:
+        pass
+    _render_iol_status()
+    _render_news_cache_status()
 
 
 def _compute_diff(old_recs, new_recs) -> dict:
@@ -405,19 +448,15 @@ def _render_technicals(ticker: str, snap) -> None:
     from core.services.technical_service import analyze as tech_analyze
     df = _fetch_technical_data((ticker,)).get(ticker)
     if df is None:
-        st.caption("Sin datos técnicos disponibles.")
+        st.caption("Sin datos del gráfico disponibles.")
         return
     high_52w = getattr(snap, "high_52w", None) if snap else None
     report = tech_analyze(ticker, df, getattr(snap, "current_price", None), high_52w)
-    st.markdown(
-        f"<div style='background:{report.grade_color};padding:6px 12px;border-radius:6px;margin:4px 0'>"
-        f"<b>Checklist técnico: {report.summary} · {report.stage}</b>"
-        f"</div>",
-        unsafe_allow_html=True,
-    )
+    color = {"FUERTE": "green", "MIXTO": "orange"}.get(report.grade, "red")
+    st.markdown(f"**El gráfico:** :{color}[**{report.summary}**] · {report.stage}")
     cols = st.columns(3)
     for i, sig in enumerate(report.signals):
-        cols[i % 3].caption(f"{sig.icon} **{sig.name}** — {sig.detail}")
+        cols[i % 3].caption(_esc(f"{sig.icon} **{sig.name}** — {sig.detail}"))
 
 
 def _render_fundamentals(fund) -> None:
@@ -427,13 +466,11 @@ def _render_fundamentals(fund) -> None:
 
     signals = fundamental_signals(fund)
     ok = sum(s.ok for s in signals)
-    color = "#1a4a1a" if ok == len(signals) else "#4a3a00" if ok else "#4a1010"
+    color = "green" if ok == len(signals) else "orange" if ok else "red"
     derived = " · Q4 calculado del balance anual" if fund.derived else ""
     st.markdown(
-        f"<div style='background:{color};color:#fff;padding:6px 12px;border-radius:6px;margin:4px 0'>"
-        f"<b>Números de la empresa (SEC): {ok}/{len(signals)} O'Neil · {fund.fiscal or ''} "
-        f"(cierre {fund.period_end}){derived}</b></div>",
-        unsafe_allow_html=True,
+        f"**Los números de la empresa (SEC):** :{color}[**{ok}/{len(signals)} O'Neil**] · "
+        f"{fund.fiscal or ''} (cierre {fund.period_end}){derived}"
     )
     cols = st.columns(3)
     for i, sig in enumerate(signals):
@@ -448,42 +485,6 @@ def _render_fundamentals(fund) -> None:
     if extras:
         text = " · ".join(extras)
         st.caption(text[0].upper() + text[1:])
-
-
-def _show_welcome():
-    st.markdown("""
-    ### ¿Qué hace finwatch?
-    - 📊 Monitorea índices, commodities, sectores y acciones en USA y Argentina
-    - 📰 Analiza noticias financieras con IA y explica su impacto
-    - 💡 Te dice qué **comprar, esperar o evitar** hoy
-    - 💼 Registrá tus compras y recibí alertas cuando tus posiciones estén en riesgo
-    - 🔍 Cubre oro, petróleo, real estate, tecnología, energía y más
-    """)
-
-
-def _render_portfolio_banner(recs, ctx):
-    portfolio = _load_portfolio()
-    if not portfolio or not recs.recommendations:
-        return
-
-    alerts = []
-    for ticker, pos in portfolio.items():
-        rec = next((r for r in recs.recommendations if r.ticker == ticker), None)
-        snap = ctx.market.get(ticker)
-        stop = pos.get("stop_price")
-        if stop and snap and snap.current_price < stop:
-            alerts.append(f"🛑 **{ticker}**: STOP-LOSS perforado — precio ${snap.current_price:.2f} < stop ${stop:.2f}. ¡Salí!")
-        elif rec and rec.action.value == "AVOID":
-            alerts.append(f"🔴 **{ticker}**: el modelo recomienda EVITAR — revisá tu posición")
-        elif snap and snap.change_pct <= -3:
-            alerts.append(f"⬇️ **{ticker}**: bajó {snap.change_pct:.1f}% hoy — posible dip para sumar si el outlook es positivo")
-        elif snap and snap.sma20 and snap.current_price < snap.sma20:
-            alerts.append(f"🟡 **{ticker}**: precio cayó bajo SMA20 — tendencia débil, monitoreá")
-
-    if alerts:
-        with st.expander("⚠️ Alertas de tu portafolio", expanded=True):
-            for a in alerts:
-                st.markdown(a)
 
 
 def _render_recomendaciones(recs, ctx):
@@ -507,8 +508,6 @@ def _render_recomendaciones(recs, ctx):
 
         is_owned = rec.ticker in portfolio
         display = rec.to_display_dict()
-        colors = {"BUY": "#1a4a1a", "WAIT": "#4a3a00", "AVOID": "#4a1010"}
-        bg = colors.get(rec.action.value, "#222")
 
         snap = ctx.market.get(rec.ticker)
         price_info = f" · ${snap.current_price:.2f} ({snap.change_pct:+.1f}%)" if snap else ""
@@ -521,25 +520,20 @@ def _render_recomendaciones(recs, ctx):
             diff_badge = f" · **{old_a} → {new_a}** ↕"
 
         with st.expander(
-            f"{display['action_label']} **{rec.ticker}**{price_info}{owned_icon} — {display['confidence_label']}{diff_badge}",
+            f"{display['action_label']} **{rec.ticker}**{price_info}{owned_icon} · {display['confidence_label']}{diff_badge}",
             expanded=(rec.action.value == "BUY" or is_owned),
         ):
-            st.markdown(
-                f"<div style='background:{bg};padding:12px;border-radius:8px;margin-bottom:8px'>"
-                f"<p style='margin:0'>{rec.reasoning}</p>"
-                f"</div>",
-                unsafe_allow_html=True,
-            )
+            st.markdown(_esc(rec.reasoning))
             if display["wait_info"]:
                 st.info(f"⏳ {display['wait_info']}")
 
-            _render_technicals(rec.ticker, snap)
-            _render_fundamentals(ctx.fundamentals.get(rec.ticker))
-
-            if rec.sources:
-                st.markdown("**Fuentes:**")
-                for s in rec.sources[:3]:
-                    st.markdown(f"- {s}")
+            with st.expander("🔍 Ver por qué (indicadores)"):
+                _render_technicals(rec.ticker, snap)
+                _render_fundamentals(ctx.fundamentals.get(rec.ticker))
+                if rec.sources:
+                    st.markdown("**Fuentes:**")
+                    for src in rec.sources[:3]:
+                        st.markdown(f"- {src}")
 
             st.divider()
 
@@ -665,7 +659,7 @@ def _render_portfolio_tab(recs, ctx):
     if not portfolio:
         st.info(
             "No tenés posiciones registradas. "
-            "En la pestaña **💡 Recomendaciones**, cuando veas BUY o WAIT, "
+            "En **📚 Aprender → 💡 Ideas**, cuando veas Comprar o Esperar, "
             "podés registrar tu compra con el formulario de cada acción."
         )
         return
@@ -733,16 +727,9 @@ def _render_portfolio_tab(recs, ctx):
 
             if st.session_state.get(f"emrg_result_{ticker}"):
                 er = st.session_state[f"emrg_result_{ticker}"]
-                icons = {"BUY": "✅", "WAIT": "⏳", "AVOID": "❌"}
-                bg = {"BUY": "#1a4a1a", "WAIT": "#4a3a00", "AVOID": "#4a1010"}
-                action = er.action.value
-                st.markdown(
-                    f"<div style='background:{bg.get(action,'#333')};padding:8px 12px;border-radius:6px;margin:4px 0'>"
-                    f"<b>⚡ Emergencia: {icons.get(action,'')} {action}</b>"
-                    + (f"<br><small>{er.reasoning[:200]}…</small>" if er.reasoning else "")
-                    + "</div>",
-                    unsafe_allow_html=True,
-                )
+                label = er.to_display_dict()["action_label"]
+                box = {"BUY": st.success, "WAIT": st.warning}.get(er.action.value, st.error)
+                box(_esc(f"**⚡ Análisis rápido: {label}**" + (f"\n\n{er.reasoning[:200]}…" if er.reasoning else "")))
 
             with col_del:
                 if st.button(f"Eliminar {ticker}", key=f"ptab_del_{ticker}"):
@@ -807,20 +794,12 @@ def _render_precios(ctx, recs=None):
 
 
 def _render_rec_banner(rec) -> None:
-    icons = {"BUY": "✅", "WAIT": "⏳", "AVOID": "❌"}
-    bg = {"BUY": "#1a4a1a", "WAIT": "#4a3a00", "AVOID": "#4a1010"}
-    action = rec.action.value
-    label = f"{icons.get(action, '')} {action}"
+    label = rec.to_display_dict()["action_label"]
     if rec.wait_days:
-        label += f" — esperar {rec.wait_days}d"
+        label += f" — esperar {rec.wait_days} días"
     reasoning = (rec.reasoning[:160] + "…") if rec.reasoning and len(rec.reasoning) > 160 else rec.reasoning or ""
-    st.markdown(
-        f"<div style='background:{bg.get(action,'#333')};padding:8px 14px;border-radius:6px;margin-bottom:4px'>"
-        f"<b>{label}</b>"
-        + (f"<br><small style='opacity:0.85'>{reasoning}</small>" if reasoning else "")
-        + "</div>",
-        unsafe_allow_html=True,
-    )
+    box = {"BUY": st.success, "WAIT": st.warning}.get(rec.action.value, st.error)
+    box(_esc(f"**{label}**" + (f"\n\n{reasoning}" if reasoning else "")))
 
 
 def _render_price_chart(ticker: str, days: int = 60, interval: str = "1d", rec=None, stop_price: float | None = None) -> None:
@@ -887,13 +866,12 @@ def _render_price_chart(ticker: str, days: int = 60, interval: str = "1d", rec=N
             height=520,
             xaxis_rangeslider_visible=False,
             legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="left", x=0),
-            paper_bgcolor="#0e1117",
-            plot_bgcolor="#0e1117",
-            font=dict(color="#fafafa"),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
             margin=dict(l=0, r=0, t=40, b=0),
         )
-        fig.update_xaxes(gridcolor="#2a2a2a", showgrid=True)
-        fig.update_yaxes(gridcolor="#2a2a2a", showgrid=True)
+        fig.update_xaxes(gridcolor="rgba(127,127,127,0.2)", showgrid=True)
+        fig.update_yaxes(gridcolor="rgba(127,127,127,0.2)", showgrid=True)
         fig.update_yaxes(title_text="Precio (USD)", row=1, col=1)
         fig.update_yaxes(title_text="Volumen", row=2, col=1)
 

@@ -1,0 +1,6 @@
+# El color se define por tema, así la app sigue usando el claro u oscuro del sistema.
+[theme.light]
+primaryColor = "#10b981"
+
+[theme.dark]
+primaryColor = "#10b981"
