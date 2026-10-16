@@ -1,4 +1,4 @@
-"""Pestaña 🎯 Metas — plan de ahorro en dólares hacia auto, casa, terreno, etc."""
+"""🎯 Mi plan: tus números, tus metas y el plan de ahorro en dólares (auto, casa, terreno...)."""
 import asyncio
 from datetime import date
 
@@ -56,14 +56,16 @@ def _duration(months: int) -> str:
     return y if years else m
 
 
-def _init_state(cfg: GoalsConfig, mep_live: float | None) -> None:
+def init_plan_state() -> None:
     """Carga goals.json en session_state una sola vez; después mandan los widgets."""
     if st.session_state.get("_goals_init"):
         return
     import pandas as pd
 
+    cfg = load_goals()
     st.session_state.update({
-        "g_mep": float(round(mep_live or _DEFAULT_MEP, 1)),
+        "g_mep": float(round(_fetch_mep() or _DEFAULT_MEP, 1)),
+        "g_name": cfg.user_name,
         "g_income": cfg.income_ars,
         "g_expenses": cfg.expenses_ars,
         "g_savings_ars": cfg.savings_ars,
@@ -85,65 +87,63 @@ def _init_state(cfg: GoalsConfig, mep_live: float | None) -> None:
 
 
 def current_mep() -> float:
-    """El MEP que se usa en Metas (el que cargaste o el de IOL), para otras pestañas."""
+    """El MEP que se usa en el plan (el que cargaste o el de IOL), para otras pestañas."""
     return float(st.session_state.get("g_mep") or _fetch_mep() or _DEFAULT_MEP)
 
 
-def render_goals_tab(portfolio: dict | None = None) -> None:
-    import pandas as pd
+def render_numbers() -> None:
+    """Tus números: van en ⚙️ Ajustes. Los valores quedan en session_state."""
+    st.markdown("#### 💵 Tus números")
+    st.caption("Con esto la app arma tu plan. Actualizalos cuando cambie tu sueldo o tus ahorros.")
+    st.text_input("Tu nombre (para saludarte)", key="g_name")
+    c1, c2 = st.columns(2)
+    c1.number_input("Ingreso mensual (ARS)", min_value=0.0, step=50_000.0, key="g_income")
+    c2.number_input("Gasto mensual (ARS)", min_value=0.0, step=50_000.0, key="g_expenses")
+    c3, c4 = st.columns(2)
+    c3.number_input(
+        "Ahorro en pesos (fondo de emergencia)", min_value=0.0, step=50_000.0, key="g_savings_ars",
+        help="Lo que tenés ahorrado en pesos: Reservas de Mercado Pago o fondo en pesos de IOL.",
+    )
+    c4.number_input(
+        "Ahorro en dólares (IOL)", min_value=0.0, step=100.0, key="g_savings_usd",
+        help="Lo que tenés invertido en dólares para tus metas (fondo en dólares, ONs, etc.).",
+    )
+    c5, c6 = st.columns(2)
+    c5.number_input(
+        "Ingresos extra próximos (ARS, total)", min_value=0.0, step=100_000.0, key="g_extra",
+        help="Ej: un trabajo freelance que cobrás en cuotas.",
+    )
+    c6.number_input("…repartidos en (meses)", min_value=1, max_value=36, key="g_extra_months")
 
-    cfg = load_goals()
     mep_live = _fetch_mep()
-    _init_state(cfg, mep_live)
-
-    st.subheader("🎯 Mis metas")
-    st.caption(
-        "Proyección en dólares con interés compuesto. Las metas se cumplen en orden: "
-        "al llegar a una, esa plata se aparta y seguís ahorrando para la siguiente."
-    )
-
-    mep = st.number_input(
-        "Dólar MEP", min_value=1.0, step=10.0, key="g_mep",
-        help="Se calcula en vivo con AL30/AL30D vía IOL. Podés pisarlo a mano.",
-    )
+    st.number_input("Dólar MEP", min_value=1.0, step=10.0, key="g_mep",
+                    help="Se calcula en vivo con AL30/AL30D vía IOL. Podés pisarlo a mano.")
     st.caption(_md(f"🏦 MEP en vivo desde IOL: {_ars(mep_live)}") if mep_live else "⚠️ Sin IOL: MEP cargado a mano")
 
-    with st.expander("💵 Mis números", expanded=cfg.income_ars == 0):
-        c1, c2 = st.columns(2)
-        income = c1.number_input("Ingreso mensual (ARS)", min_value=0.0, step=50_000.0, key="g_income")
-        expenses = c2.number_input("Gasto mensual (ARS)", min_value=0.0, step=50_000.0, key="g_expenses")
-        c3, c4 = st.columns(2)
-        savings_ars = c3.number_input(
-            "Ahorro en pesos (Mercado Pago)", min_value=0.0, step=50_000.0, key="g_savings_ars",
-            help="Lo que tenés ahorrado en pesos. Funciona como tu fondo de emergencia.",
-        )
-        savings_usd = c4.number_input(
-            "Ahorro en dólares (IOL)", min_value=0.0, step=100.0, key="g_savings_usd",
-            help="Lo que tenés invertido en dólares para tus metas (fondo en dólares, ONs, etc.).",
-        )
-        c5, c6 = st.columns(2)
-        extra = c5.number_input(
-            "Ingresos extra próximos (ARS, total)", min_value=0.0, step=100_000.0, key="g_extra",
-            help="Ej: un trabajo freelance que cobrás en cuotas.",
-        )
-        extra_months = c6.number_input("…repartidos en (meses)", min_value=1, max_value=36, key="g_extra_months")
+    with st.expander("Opciones avanzadas"):
         c7, c8 = st.columns(2)
-        annual_return = c7.slider(
+        c7.slider(
             "Rendimiento anual en USD (%)", 0.0, 12.0, step=0.5, key="g_return_pct",
             help="Fondo en dólares ~3-5% · ONs corporativas ~6-8% · bonos del Estado ~10-11% (más riesgo)",
-        ) / 100
-        emergency_months = c8.slider("Fondo de emergencia (meses de gasto)", 0, 6, key="g_emergency")
+        )
+        c8.slider("Fondo de emergencia (meses de gasto)", 0, 6, key="g_emergency")
         c9, c10 = st.columns(2)
-        stocks_pct = c9.slider(
+        c9.slider(
             "Máximo en acciones (% de todo tu ahorro)", 0, 30, step=1, key="g_stocks_pct",
             help="La plata del auto y la casa no va a acciones. Esto es un bolsillo chico para aprender y tomar riesgo.",
         )
-        position_pct = c10.slider(
+        c10.slider(
             "Máximo en una sola acción (% del bolsillo)", 10, 100, step=5, key="g_position_pct",
             help="Con 25% necesitás al menos 4 acciones distintas: si una se hunde, no te lleva todo.",
         )
 
-    st.markdown("**Metas (en orden de prioridad)**")
+
+def render_goals_editor() -> list[Goal]:
+    """La tabla de metas (en 🎯 Mi plan)."""
+    import pandas as pd
+
+    st.markdown("#### 🎯 Tus metas")
+    st.caption("En orden de prioridad. Poné un plazo y la app calcula cuánto ahorrar y dónde invertir.")
     edited = st.data_editor(
         st.session_state["g_goals_base"],
         num_rows="dynamic",
@@ -162,7 +162,7 @@ def render_goals_tab(portfolio: dict | None = None) -> None:
             ),
         },
     )
-    goals = [
+    return [
         Goal(
             str(row["Meta"]),
             float(row["Monto USD"]),
@@ -173,43 +173,52 @@ def render_goals_tab(portfolio: dict | None = None) -> None:
         if pd.notna(row["Meta"]) and str(row["Meta"]).strip() and pd.notna(row["Monto USD"]) and row["Monto USD"] > 0
     ]
 
-    new_cfg = GoalsConfig(
-        income_ars=income,
-        expenses_ars=expenses,
-        savings_ars=savings_ars,
-        savings_usd=savings_usd,
-        extra_income_ars=extra,
-        extra_income_months=int(extra_months),
-        annual_return=annual_return,
-        emergency_months=emergency_months,
-        last_done_month=st.session_state["g_last_done"],
-        stocks_max_pct=stocks_pct / 100,
-        stock_position_max_pct=position_pct / 100,
+
+def build_cfg(goals: list[Goal]) -> GoalsConfig:
+    """Arma la config con lo que hay en los widgets y la guarda si cambió."""
+    ss = st.session_state
+    cfg = GoalsConfig(
+        user_name=str(ss["g_name"]).strip(),
+        income_ars=ss["g_income"],
+        expenses_ars=ss["g_expenses"],
+        savings_ars=ss["g_savings_ars"],
+        savings_usd=ss["g_savings_usd"],
+        extra_income_ars=ss["g_extra"],
+        extra_income_months=int(ss["g_extra_months"]),
+        annual_return=ss["g_return_pct"] / 100,
+        emergency_months=ss["g_emergency"],
+        last_done_month=ss["g_last_done"],
+        stocks_max_pct=ss["g_stocks_pct"] / 100,
+        stock_position_max_pct=ss["g_position_pct"] / 100,
         goals=goals,
     )
-    if new_cfg != cfg:
-        save_goals(new_cfg)
+    if cfg != load_goals():
+        save_goals(cfg)
+    return cfg
 
-    if income <= 0:
-        st.info("Cargá tu ingreso y tu gasto mensual en **💵 Mis números** para ver la proyección.")
+
+def render_plan_body(cfg: GoalsConfig, mep: float, portfolio: dict | None = None) -> None:
+    """Todo el detalle del plan (en 🎯 Mi plan, debajo de la tabla de metas)."""
+    if cfg.income_ars <= 0:
+        st.info("Cargá tu ingreso y tu gasto en **⚙️ Ajustes** para ver tu plan.")
         return
 
-    monthly_ars = new_cfg.monthly_savings_ars
+    monthly_ars = cfg.monthly_savings_ars
     m1, m2, m3 = st.columns(3)
-    m1.metric("Ahorro mensual", _ars(monthly_ars), f"{new_cfg.savings_rate:.0%} del ingreso")
+    m1.metric(f"Ahorrás por mes ({cfg.savings_rate:.0%} del ingreso)", _ars(monthly_ars))
     m2.metric("En dólares", _usd(monthly_ars / mep) + "/mes")
-    m3.metric("Ya tenés", _usd(savings_usd + savings_ars / mep))
+    m3.metric("Ya tenés", _usd(cfg.savings_usd + cfg.savings_ars / mep))
 
     if monthly_ars <= 0:
-        st.warning("Con estos números no te queda ahorro mensual. Revisá ingreso y gasto.")
+        st.warning("Con estos números no te queda ahorro mensual. Revisá ingreso y gasto en ⚙️ Ajustes.")
         return
 
-    _render_this_month(new_cfg, mep)
+    _render_this_month(cfg, mep)
 
-    proj = project(new_cfg, mep)
+    proj = project(cfg, mep)
     today = date.today()
 
-    st.markdown("**¿Cuándo llego?**")
+    st.markdown("#### ¿Cuándo llego?")
     rows = []
     for r in proj.results:
         when = r.reached_on(today)
@@ -222,12 +231,12 @@ def render_goals_tab(portfolio: dict | None = None) -> None:
     st.dataframe(rows, hide_index=True, width="stretch")
 
     _render_balance_chart(proj.balance_usd, proj.results, today)
-    _render_plan(new_cfg, mep)
-    _render_stock_pocket(new_cfg, portfolio or {}, mep)
+    _render_plan(cfg, mep)
+    _render_stock_pocket(cfg, portfolio or {}, mep)
     _render_land_calculator()
 
 
-def _apply_month(keep_ars: float, excess_ars: float, transfer_usd: float, month_key: str) -> None:
+def apply_month(keep_ars: float, excess_ars: float, transfer_usd: float, month_key: str) -> None:
     st.session_state["g_savings_ars"] += keep_ars - excess_ars
     st.session_state["g_savings_usd"] += transfer_usd
     st.session_state["g_last_done"] = month_key
@@ -240,7 +249,7 @@ def _render_this_month(cfg: GoalsConfig, mep: float) -> None:
     a = this_month(cfg, mep)
 
     with st.container(border=True):
-        st.markdown(f"### 🗓️ Este mes ({_MONTHS_ES[today.month - 1]})")
+        st.markdown(f"#### 🗓️ Este mes ({_MONTHS_ES[today.month - 1]})")
         if already_done:
             st.success("✅ Ya hiciste lo de este mes. El mes que viene te aparecen los pasos nuevos.")
             return
@@ -300,13 +309,14 @@ def _render_this_month(cfg: GoalsConfig, mep: float) -> None:
         st.button(
             "✅ Ya lo hice",
             type="primary",
-            on_click=_apply_month,
+            on_click=apply_month,
+            key="plan_done",
             args=(a.keep_in_mp_ars, a.excess_mp_ars, a.transfer_usd, month_key),
         )
 
 
 def _render_plan(cfg: GoalsConfig, mep: float) -> None:
-    st.markdown("**📋 Plan: cuánto ahorrar y dónde invertir**")
+    st.markdown("#### 📋 Cuánto ahorrar y dónde invertir")
     st.caption(
         "Ahorrás un monto fijo por mes que va primero a la meta más urgente; cuando la completás, "
         "pasa a la siguiente. Cuanto más lejos está una meta, más riesgo podés tomar para que rinda más. "
@@ -354,7 +364,7 @@ def _render_stock_pocket(cfg: GoalsConfig, portfolio: dict, mep: float) -> None:
     from core.services.risk_service import stock_budget
 
     b = stock_budget(cfg, portfolio, mep)
-    st.markdown("**📈 Bolsillo de acciones**")
+    st.markdown("#### 📈 Bolsillo de acciones")
     if not b.emergency_ok:
         st.info(
             "Todavía no es momento de comprar acciones: primero completá el fondo de emergencia. "
@@ -366,7 +376,7 @@ def _render_stock_pocket(cfg: GoalsConfig, portfolio: dict, mep: float) -> None:
     c2.metric("Ya invertido", _ars(b.invested_ars))
     c3.metric("Disponible", _ars(b.available_ars))
     c4.metric("Máximo por acción", _ars(b.per_stock_cap_ars))
-    st.caption("Cuando registres una compra en 💡 Recomendaciones, la app te avisa si te pasás de estos topes.")
+    st.caption("Cuando registres una compra en 📚 Aprender → Ideas, la app te avisa si te pasás de estos topes.")
 
 
 def _render_balance_chart(balances: list[float], results, today: date) -> None:

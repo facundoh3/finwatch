@@ -41,6 +41,7 @@ EMERGENCY_YEARS = 0.5
 
 @dataclass
 class GoalsConfig:
+    user_name: str = ""
     income_ars: float = 0.0
     expenses_ars: float = 0.0
     savings_ars: float = 0.0
@@ -238,7 +239,7 @@ def plan_by_goal(cfg: GoalsConfig, mep: float) -> Plan:
     return Plan(rows, hi)
 
 
-def _pending_in_order(cfg: GoalsConfig) -> list[Goal]:
+def pending_goals_in_order(cfg: GoalsConfig) -> list[Goal]:
     """Metas pendientes en el orden en que se financian: primero las de plazo más corto."""
     pending = [g for g in cfg.goals if not g.done]
     with_deadline = sorted((g for g in pending if g.years), key=lambda g: g.years)
@@ -274,7 +275,7 @@ def this_month(cfg: GoalsConfig, mep: float) -> MonthAction:
     transfer_ars = cfg.monthly_savings_ars - keep + excess
 
     goal, saved, remaining = None, 0.0, cfg.savings_usd
-    for g in _pending_in_order(cfg):
+    for g in pending_goals_in_order(cfg):
         if remaining < g.target_usd:
             goal, saved = g, remaining
             break
