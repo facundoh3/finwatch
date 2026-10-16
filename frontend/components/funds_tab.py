@@ -19,9 +19,17 @@ from core.services.institutional_service import (
 _STATUS_ICON = {STATUS_NEW: "🆕", STATUS_ADDED: "🟢", STATUS_TRIMMED: "🟠", STATUS_SAME: "⚪", STATUS_SOLD: "🔴"}
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def _load_fund(cik: str, user_agent: str):
-    return asyncio.run(get_fund_holdings(cik, user_agent, CacheService(cache_dir=Path("data/cache"))))
+@st.cache_data(ttl=600, show_spinner=False)
+def _load_fund(cik: str, user_agent: str) -> tuple:
+    """(fondo, error). El error también se cachea 10 minutos: reintentar enseguida alarga un bloqueo de la SEC."""
+    from core.services.fundamentals_service import SECBlockedError
+
+    try:
+        return asyncio.run(get_fund_holdings(cik, user_agent, CacheService(cache_dir=Path("data/cache")))), None
+    except SECBlockedError as e:
+        return None, str(e)
+    except Exception as e:
+        return None, f"No se pudo leer el 13F de la SEC: {e}"
 
 
 @st.cache_data(ttl=24 * 3600, show_spinner=False)
@@ -73,11 +81,13 @@ def render_funds_tab() -> None:
     )
 
     with st.spinner("Leyendo el último reporte 13F en la SEC..."):
-        try:
-            fund = _load_fund(cik, ua)
-        except Exception as e:
-            st.error(f"No se pudo leer el 13F de la SEC: {e}")
-            return
+        fund, error = _load_fund(cik, ua)
+    if error:
+        st.warning(error)
+        if st.button("🔄 Reintentar", key="funds_retry"):
+            _load_fund.clear()
+            st.rerun()
+        return
     if fund is None:
         st.warning("No se encontraron datos para este fondo.")
         return

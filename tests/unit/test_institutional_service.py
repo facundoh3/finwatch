@@ -164,3 +164,14 @@ async def test_summary_for_prompt_only_mentions_analyzed_tickers(tmp_path):
     assert "STZ VENDIÓ TODO" in line
     assert "NVDA" not in line
     assert summarize_for(["NVDA"], fund) == ""
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_blocked_by_sec_raises_a_clear_error(tmp_path):
+    from core.services.fundamentals_service import SECBlockedError
+
+    _mock_sec()
+    respx.get(ARCHIVE_URL.format(cik=1067983, folder=Q2) + "index.json").mock(return_value=httpx.Response(403))
+    with pytest.raises(SECBlockedError, match="403"):
+        await get_fund_holdings(BERKSHIRE_CIK, UA, CacheService(cache_dir=tmp_path))

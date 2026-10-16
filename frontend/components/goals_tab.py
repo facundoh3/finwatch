@@ -86,9 +86,14 @@ def init_plan_state() -> None:
     })
 
 
+def live_mep() -> float | None:
+    """Dólar MEP en vivo desde IOL (se refresca cada 15 minutos). None si IOL no responde."""
+    return _fetch_mep()
+
+
 def current_mep() -> float:
-    """El MEP que se usa en el plan (el que cargaste o el de IOL), para otras pestañas."""
-    return float(st.session_state.get("g_mep") or _fetch_mep() or _DEFAULT_MEP)
+    """El MEP que usa toda la app: el de IOL si está disponible; si no, el cargado a mano."""
+    return float(_fetch_mep() or st.session_state.get("g_mep") or _DEFAULT_MEP)
 
 
 def render_numbers() -> None:
@@ -116,9 +121,13 @@ def render_numbers() -> None:
     c6.number_input("…repartidos en (meses)", min_value=1, max_value=36, key="g_extra_months")
 
     mep_live = _fetch_mep()
-    st.number_input("Dólar MEP", min_value=1.0, step=10.0, key="g_mep",
-                    help="Se calcula en vivo con AL30/AL30D vía IOL. Podés pisarlo a mano.")
-    st.caption(_md(f"🏦 MEP en vivo desde IOL: {_ars(mep_live)}") if mep_live else "⚠️ Sin IOL: MEP cargado a mano")
+    if mep_live:
+        st.markdown(_md(f"**Dólar MEP:** {_ars(mep_live)} 🏦 en vivo desde IOL"))
+        st.caption("Se actualiza solo cada 15 minutos con los precios de AL30 y AL30D.")
+    else:
+        st.number_input("Dólar MEP", min_value=1.0, step=10.0, key="g_mep",
+                        help="IOL no respondió: cargalo a mano mientras tanto.")
+        st.caption("⚠️ IOL no está conectado o no respondió: el dólar se carga a mano.")
 
     with st.expander("Opciones avanzadas"):
         c7, c8 = st.columns(2)
